@@ -1,0 +1,7 @@
+#!/bin/sh
+# dotscurb template: appends one PATH line (tools from mise, the dotscurb and dotagents commands) if missing.
+# Everything else in this file stays yours.
+line='export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"   # dotscurb'
+t=$(mktemp); cat > "$t"; cat "$t"
+grep -qF "$line" "$t" || { [ -s "$t" ] && echo; printf '%s\n' "$line"; }
+rm -f "$t"

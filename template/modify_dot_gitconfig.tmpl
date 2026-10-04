@@ -1,0 +1,8 @@
+#!/bin/sh
+# dotscurb template: sets only the keys dotscurb needs in ~/.gitconfig; everything else in it stays yours.
+t=$(mktemp); cat > "$t"
+git config -f "$t" core.hooksPath "{{ .chezmoi.workingTree }}/hooks"
+git config -f "$t" dotscurb.coauthor {{ printf "%s's Agent <%s+%s@users.noreply.github.com>" .github .githubId .github | quote }}
+[ -n "$(git config -f "$t" --get user.name)" ] || git config -f "$t" user.name {{ .name | quote }}
+[ -n "$(git config -f "$t" --get user.email)" ] || git config -f "$t" user.email {{ .email | quote }}
+cat "$t"; rm -f "$t"

@@ -1,0 +1,10 @@
+{{- /* dotscurb template: asked once per machine; answers stay in this machine's chezmoi config, never in the repo. */ -}}
+{{- $name := promptStringOnce . "name" "Your full name (for git commits)" -}}
+{{- $email := promptStringOnce . "email" "Your email (for git commits)" -}}
+{{- $github := promptStringOnce . "github" "Your GitHub username (for the agent co-author line)" -}}
+{{- $githubId := promptStringOnce . "githubId" "Your GitHub numeric id (gh api user --jq .id)" -}}
+[data]
+    name = {{ $name | quote }}
+    email = {{ $email | quote }}
+    github = {{ $github | quote }}
+    githubId = {{ $githubId | quote }}
