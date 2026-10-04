@@ -17,9 +17,26 @@ dotscurb    the gaps:
   defaults/              shared content: AGENTS.md rules, policy.yaml, mise.toml tool list, a starter agents.toml
 ```
 
+## Set up a new machine
+
+Prerequisites: `git`, `zsh` or `bash`, `curl`, Node 20+ (for dotagents), GitHub access to this repo (`gh auth login`).
+
+```sh
+sh -c "$(curl -fsLS get.chezmoi.io)" -- -b ~/.local/bin
+~/.local/bin/chezmoi init --apply https://github.com/safa0/dotscurb.git
+exec zsh
+```
+
+chezmoi asks four questions once (name, email, GitHub username and numeric id for the agent co-author line), then uses
+`template/` in this repo. It only adds to your existing `~/.gitconfig` and shell files: the hooks path, the co-author
+line, a missing name/email, and one PATH line. Update later with `chezmoi update`.
+
+Already using chezmoi for your own dotfiles? Copy `template/` into your repo and point it at a dotscurb checkout
+(e.g. with `.chezmoiexternal.toml`) instead.
+
 ## How a machine uses it
 
-Your chezmoi repo does the placing (a template repo for others does the same):
+chezmoi does the placing (`template/`, or the same files in your own dotfiles repo):
 
 | chezmoi places | from dotscurb |
 |---|---|
