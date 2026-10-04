@@ -1,11 +1,11 @@
 #!/bin/sh
-# dotscurb: the glue between chezmoi, mise, dotagents, git and the coding agents (Claude, Cursor, Codex, pi, OpenCode).
-#   dotscurb install   set up this machine: tools (mise), git hooks, ~/.agents files and links; then apply
-#   dotscurb apply     render the policy and shared rules into the agents (only the keys dotscurb owns)
-#   dotscurb check     list MCP servers and plugins installed outside dotagents (read-only)
-#   dotscurb da …      run dotagents at the pinned version
+# dotscurb: only the glue the other tools don't provide (chezmoi places files, mise installs tools, dotagents
+# handles skills/MCP/plugins, git runs the hooks in ../hooks).
+#   dotscurb apply         render the policy into Claude Code + Cursor CLI, and switch on in Claude the plugins
+#                          dotagents declares (dotagents only generates the marketplace)
+#   dotscurb check         list MCP servers and plugins installed outside dotagents (read-only)
+#   dotscurb check --fix   move them into dotagents and remove the native copy (never copies secret values)
 set -u
-DOTAGENTS_VERSION=3.3.0
 
 self=$0
 while [ -L "$self" ]; do t=$(readlink "$self"); case $t in /*) self=$t ;; *) self=$(dirname "$self")/$t ;; esac; done
@@ -13,22 +13,11 @@ ROOT=$(cd "$(dirname "$self")/.." && pwd -P)
 A="$HOME/.agents"
 PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"; export PATH
 QUIET=0
+TAB=$(printf '\t')
 
 say() { [ "$QUIET" = 1 ] || printf '%s\n' "$*"; }
 warn() { printf 'dotscurb: %s\n' "$*" >&2; }
-need() { command -v "$1" >/dev/null 2>&1 || { warn "$1 not found; run: dotscurb install"; exit 1; }; }
-
-# link <target> <path>: create or confirm a symlink; never replaces a real file
-link() {
-  if [ -L "$2" ]; then
-    [ "$(readlink "$2")" = "$1" ] && return 0
-    ln -sfn "$1" "$2" && say "relinked ${2#$HOME/}"
-  elif [ -e "$2" ]; then
-    warn "~/${2#$HOME/} exists and is not a link; left alone"
-  else
-    mkdir -p "$(dirname "$2")" && ln -s "$1" "$2" && say "linked ~/${2#$HOME/}"
-  fi
-}
+need() { command -v "$1" >/dev/null 2>&1 || { warn "$1 not found (it comes from mise: mise install)"; exit 1; }; }
 
 # put <file> <tmpfile>: replace contents only when they differ (keeps owner, group and mode)
 put() {
@@ -47,8 +36,8 @@ jsonedit() {
 }
 
 policy_json() {
-  def=$(yq -o=json '. // {}' "$ROOT/defaults/policy.yaml")
-  per='{}'; [ -f "$A/policy.yaml" ] && per=$(yq -o=json '. // {}' "$A/policy.yaml")
+  def=$(yq -o=json '. // {}' "$ROOT/defaults/policy.yaml") || { warn "could not read defaults/policy.yaml (yq failed)"; exit 1; }
+  per='{}'; [ -f "$A/policy.yaml" ] && { per=$(yq -o=json '. // {}' "$A/policy.yaml") || { warn "could not read ~/.agents/policy.yaml (yq failed)"; exit 1; }; }
   jq -n --argjson a "$def" --argjson b "$per" '
     def u: reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end);
     { denyRead: (($a.denyRead // []) + ($b.denyRead // []) | u),
@@ -56,44 +45,11 @@ policy_json() {
       denyCommands: (($a.denyCommands // []) + ($b.denyCommands // []) | u) }'
 }
 
-cmd_install() {
-  # 1. CLI tools via mise (no sudo)
-  if ! command -v mise >/dev/null 2>&1; then
-    if command -v brew >/dev/null 2>&1; then brew install mise; else curl -fsSL https://mise.run | sh; fi
-  fi
-  link "$ROOT/defaults/mise.toml" "$HOME/.config/mise/conf.d/dotscurb.toml"
-  if [ "$QUIET" = 1 ]; then mise install --yes >/dev/null 2>&1; else mise install --yes; fi || warn "mise install failed"
-  # 2. git: global hooks + co-author line for agent commits
-  cur=$(git config --global --get core.hooksPath || true)
-  case $cur in "~/"*) cur="$HOME/${cur#"~/"}" ;; esac
-  [ "$cur" = "$ROOT/hooks" ] || { git config --global core.hooksPath "$ROOT/hooks"; say "git hooks: $ROOT/hooks"; }
-  if [ -z "$(git config --global --get dotscurb.coauthor || true)" ] && gh auth status >/dev/null 2>&1; then
-    login=$(gh api user --jq .login) && id=$(gh api user --jq .id) && \
-      git config --global dotscurb.coauthor "$login's Agent <$id+$login@users.noreply.github.com>" && say "co-author: $login's Agent"
-  fi
-  # 3. ~/.agents: your files are created once and never overwritten
-  mkdir -p "$A/skills"
-  [ -f "$A/agents.toml" ] || { cp "$ROOT/defaults/agents.toml" "$A/agents.toml"; say "created ~/.agents/agents.toml"; }
-  [ -f "$A/policy.yaml" ] || { printf '# Your additions to the dotscurb policy (same keys as %s/defaults/policy.yaml).\ndenyRead: []\ndenyWrite: []\ndenyCommands: []\n' "$ROOT" > "$A/policy.yaml"; say "created ~/.agents/policy.yaml"; }
-  # 4. links: shared rules and skills for every agent, and the command itself
-  link "$A/AGENTS.md" "$HOME/.claude/CLAUDE.md"
-  link "$A/AGENTS.md" "$HOME/.codex/AGENTS.md"
-  link "$A/AGENTS.md" "$HOME/AGENTS.md"
-  link "$A/skills" "$HOME/.claude/skills"
-  link "$ROOT/bin/dotscurb" "$HOME/.local/bin/dotscurb"
-  shell=$(basename "${SHELL:-sh}")
-  env -i HOME="$HOME" PATH=/usr/bin:/bin "$shell" -lc "command -v rg && command -v dotscurb" >/dev/null 2>&1 || \
-    warn "rg or dotscurb not on PATH in new shells; add to ~/.zshenv (or ~/.profile): export PATH=\"\$HOME/.local/bin:\$HOME/.local/share/mise/shims:\$PATH\""
-  DA_MODE=install cmd_apply
-}
+CP="$HOME/.claude/plugins"   # Claude Code's plugin records
 
 cmd_apply() {
   need jq; need yq
-  # 1. shared rules + your personal rules
-  t=$(mktemp); cat "$ROOT/defaults/AGENTS.md" > "$t"
-  [ -f "$A/AGENTS.personal.md" ] && { printf '\n' >> "$t"; cat "$A/AGENTS.personal.md" >> "$t"; }
-  put "$A/AGENTS.md" "$t" || true
-  # 2. policy → Claude Code (deny rules, attribution off, session-start check)
+  # 1. policy → Claude Code (deny rules, attribution off, session-start check)
   pol=$(policy_json)
   [ -f "$HOME/.claude/settings.json" ] || { mkdir -p "$HOME/.claude" && echo "{}" > "$HOME/.claude/settings.json"; }
   jsonedit "$HOME/.claude/settings.json" '
@@ -104,70 +60,132 @@ cmd_apply() {
         | if any(.[]; any(.hooks[]?; (.command // "") | test("dotscurb check"))) then .
           else . + [{"hooks": [{"type": "command", "command": $hook}]}] end)' \
     --argjson p "$pol" --arg hook "$HOME/.local/bin/dotscurb check --session"
-  # 3. policy → Cursor CLI (absolute paths; Shell(cmd:args*) format)
+  # 2. policy → Cursor CLI (absolute paths; Shell(cmd:args*) format)
   jsonedit "$HOME/.cursor/cli-config.json" '
     def abs: sub("^~/"; $home + "/");
     .permissions.deny = [($p.denyRead[] | "Read(\(abs))"), ($p.denyWrite[] | "Write(\(abs))"),
       ($p.denyCommands[] | if (.args // "") != "" then "Shell(\(.cmd):\(.args)*)" else "Shell(\(.cmd))" end)]
     | .attribution.attributeCommitsToAgent = false | .attribution.attributePRsToAgent = false' \
     --argjson p "$pol" --arg home "$HOME"
-  # 4. dotagents renders skills + MCP for every agent
-  if [ -f "$A/agents.toml" ] && command -v npx >/dev/null 2>&1; then
-    (cd "$HOME" && npx -y "@sentry/dotagents@$DOTAGENTS_VERSION" --global "${DA_MODE:-sync}" 2>&1 | grep -v -e 'npm notice' -e 'Everything in sync' -e 'Repaired' | sed 's/^/dotagents: /' >&2) || true
+  # 3. plugins declared in ~/.agents/agents.toml → switched on in Claude Code (dotagents issue #176:
+  #    it generates ~/.agents/.claude-plugin/marketplace.json but never registers or installs it)
+  mk="$A/.claude-plugin/marketplace.json"
+  if command -v claude >/dev/null 2>&1 && [ -f "$mk" ]; then
+    jq -e '.dotagents' "$CP/known_marketplaces.json" >/dev/null 2>&1 || \
+      { claude plugin marketplace add "$A" >/dev/null 2>&1 && say "Claude: added the dotagents plugin marketplace"; }
+    claude plugin marketplace update dotagents >/dev/null 2>&1 || true
+    want=$(jq -r '.plugins[].name' "$mk")
+    have=$(jq -r '.plugins // {} | keys[] | select(endswith("@dotagents")) | sub("@dotagents$"; "")' "$CP/installed_plugins.json" 2>/dev/null)
+    for n in $want; do printf '%s\n' "$have" | grep -qx -- "$n" && continue
+      claude plugin install "$n@dotagents" --scope user >/dev/null 2>&1 && say "Claude: switched on plugin $n" || warn "Claude: could not install plugin $n"; done
+    for n in $have; do printf '%s\n' "$want" | grep -qx -- "$n" && continue
+      claude plugin uninstall "$n@dotagents" --scope user >/dev/null 2>&1 && say "Claude: switched off plugin $n (no longer in agents.toml)"; done
   fi
 }
 
-# check: print native MCP servers / plugins that no agents.toml declares
-JQ_MCP='to_entries[] | [.key, $where,
-  (if ([(.value.env // {}), (.value.headers // {}), (.value.http_headers // {})] | add | to_entries
-        | map(.value | tostring | select(test("\\$\\{|\\{env:") | not)) | length) > 0
-   then "literal secret in config" else "" end)] | @tsv'
-mcp_from() { # <file> <jq-path> <label> [toml]
+# --- check / fix -----------------------------------------------------------------------------------------
+# normalise one native MCP entry (Claude/Cursor/pi JSON, Codex TOML, OpenCode) to {url, cmd, headers, envkeys, secret}
+JQ_NORM='def lit: tostring | test("\\$\\{|\\{env:") | not;
+  { url: (.url // null),
+    cmd: (if .command then ([.command] + (.args // []) | flatten | map(tostring) | join(" ")) else null end),
+    headers: ((.headers // .http_headers // {}) | to_entries | map("\(.key):\(.value)")),
+    envkeys: (((.env // .environment // {}) | keys) + (.env_vars // [])),
+    secret: ([(.env // .environment // {}), (.headers // .http_headers // {})] | add | to_entries
+             | map(select(.value | lit)) | length > 0) }'
+# mcp_from <file> <jq-path> <scope: user|project> <agent> [toml] → TSV: name scope agent json
+mcp_from() {
   [ -f "$1" ] || return 0
-  if [ "${4:-}" = toml ]; then yq -p toml -o json "$2 // {}" "$1" 2>/dev/null; else jq "$2 // {}" "$1" 2>/dev/null; fi \
-    | jq -r --arg where "$3" "$JQ_MCP" 2>/dev/null
+  if [ "${5:-}" = toml ]; then yq -p toml -o json "$2 // {}" "$1" 2>/dev/null; else jq "$2 // {}" "$1" 2>/dev/null; fi \
+    | jq -r --arg s "$3" --arg a "$4" "to_entries[] | [.key, \$s, \$a, (.value | $JQ_NORM | tojson)] | @tsv" 2>/dev/null
 }
+native_items() { # TSV: kind name scope agent detail
+  repo=$1
+  { mcp_from "$HOME/.claude.json" '.mcpServers' user Claude
+    [ -n "$repo" ] && mcp_from "$HOME/.claude.json" ".projects[\"$repo\"].mcpServers" project Claude-local
+    [ -n "$repo" ] && mcp_from "$repo/.mcp.json" '.mcpServers' project Claude
+    mcp_from "$HOME/.cursor/mcp.json" '.mcpServers' user Cursor
+    [ -n "$repo" ] && mcp_from "$repo/.cursor/mcp.json" '.mcpServers' project Cursor
+    mcp_from "$HOME/.codex/config.toml" '.mcp_servers' user Codex toml
+    [ -n "$repo" ] && mcp_from "$repo/.codex/config.toml" '.mcp_servers' project Codex toml
+    mcp_from "$HOME/.pi/agent/mcp.json" '.mcpServers' user pi
+    [ -n "$repo" ] && mcp_from "$repo/.pi/mcp.json" '.mcpServers' project pi
+    mcp_from "$HOME/.config/opencode/opencode.json" '.mcp' user OpenCode
+  } | sed "s/^/mcp$TAB/"
+  # Claude plugins from a marketplace other than dotagents (claude.ai-synced ones are Claude's own)
+  [ -f "$CP/installed_plugins.json" ] && jq -r --arg repo "$repo" --slurpfile km "$CP/known_marketplaces.json" '
+    .plugins // {} | to_entries[] | (.key | split("@")) as [$n, $m]
+    | select($m != "dotagents" and $m != "synced") | .value[]
+    | select(.scope == "user" or .projectPath == $repo)
+    | ["plugin", $n, (if .scope == "user" then "user" else "project" end), "Claude",
+       ({market: $m, repo: ($km[0][$m].source.repo // null), ref: (.gitCommitSha // null), claudeScope: .scope} | tojson)]
+    | @tsv' "$CP/installed_plugins.json" 2>/dev/null
+  true
+}
+
 cmd_check() {
   need jq; need yq
-  session=0; [ "${1:-}" = --session ] && session=1
+  session=0; fix=0
+  for a in "$@"; do case $a in --session) session=1 ;; --fix) fix=1 ;; esac; done
   repo=$(git rev-parse --show-toplevel 2>/dev/null || true)
-  declared=$( { for t in "$A/agents.toml" ${repo:+"$repo/agents.toml"}; do
-      [ -f "$t" ] && yq -p toml -o json '[(.mcp // [])[].name, (.plugins // [])[].name]' "$t" | jq -r '.[]'; done; } | sort -u)
-  found=$( {
-    mcp_from "$HOME/.claude.json" '.mcpServers' 'Claude, every project'
-    [ -n "$repo" ] && mcp_from "$HOME/.claude.json" ".projects[\"$repo\"].mcpServers" 'Claude, this project'
-    [ -n "$repo" ] && mcp_from "$repo/.mcp.json" '.mcpServers' 'Claude, .mcp.json'
-    mcp_from "$HOME/.cursor/mcp.json" '.mcpServers' 'Cursor, every project'
-    [ -n "$repo" ] && mcp_from "$repo/.cursor/mcp.json" '.mcpServers' 'Cursor, this project'
-    mcp_from "$HOME/.codex/config.toml" '.mcp_servers' 'Codex, every project' toml
-    [ -n "$repo" ] && mcp_from "$repo/.codex/config.toml" '.mcp_servers' 'Codex, this project' toml
-    mcp_from "$HOME/.pi/agent/mcp.json" '.mcpServers' 'pi, every project'
-    [ -n "$repo" ] && mcp_from "$repo/.pi/mcp.json" '.mcpServers' 'pi, this project'
-    mcp_from "$HOME/.config/opencode/opencode.json" '.mcp' 'OpenCode, every project'
-    f="$HOME/.claude/plugins/installed_plugins.json"
-    [ -f "$f" ] && jq -r --arg repo "$repo" '.plugins // {} | to_entries[] | select(.key | endswith("@synced") | not)
-      | .key as $k | .value[] | select(.scope == "user" or .projectPath == $repo)
-      | [($k | split("@")[0]), "Claude plugin, \(if .scope == "user" then "every project" else "this project" end)", ""] | @tsv' "$f"
-    true
-  } | sort -u)
-  out=$(printf '%s\n' "$found" | while IFS="$(printf '\t')" read -r name where note; do
+  declared=""
+  for t in "$A/agents.toml" ${repo:+"$repo/agents.toml"}; do
+    [ -f "$t" ] || continue
+    j=$(yq -p toml -o json '[(.mcp // [])[].name, (.plugins // [])[].name]' "$t") || { warn "could not read $t (yq failed)"; return 1; }
+    declared="$declared
+$(printf '%s' "$j" | jq -r '.[]')"
+  done
+  items=$(native_items "$repo" | while IFS="$TAB" read -r kind name scope agent detail; do
     [ -n "$name" ] || continue
     printf '%s\n' "$declared" | grep -qx -- "$name" && continue
-    printf '  - %s  (%s)%s\n' "$name" "$where" "${note:+  ⚠ $note}"
-  done)
-  if [ -z "$out" ]; then [ "$session" = 1 ] || echo "dotscurb: everything is managed by dotagents"; return 0; fi
-  echo "dotscurb: installed outside dotagents, so other agents and machines don't get them:"
-  printf '%s\n' "$out"
-  echo "Move each one: dotscurb da [--project] mcp add <name> --url <url> | --command \"<cmd>\" [--env NAME]"
-  echo "(plugins: dotscurb da [--project] add <source>), then remove the native entry. Never copy secret values."
+    printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$name" "$scope" "$agent" "$detail"
+  done | sort -u -t "$TAB" -k1,3)
+  if [ -z "$items" ]; then [ "$session" = 1 ] || echo "dotscurb: everything is managed by dotagents"; return 0; fi
+  if [ "$fix" = 0 ]; then
+    echo "dotscurb: installed outside dotagents, so other agents and machines don't get them:"
+    printf '%s\n' "$items" | while IFS="$TAB" read -r kind name scope agent detail; do
+      s=""; [ "$(printf '%s' "$detail" | jq -r '.secret // false')" = true ] && s="  ⚠ secret value in config, move it by hand"
+      printf '  - %s %s  (%s, %s)%s\n' "$kind" "$name" "$agent" "$( [ "$scope" = user ] && echo every project || echo this project)" "$s"
+    done
+    echo "Run 'dotscurb check --fix' to move them into dotagents (secret values are never copied)."
+    return 0
+  fi
+  need dotagents
+  printf '%s\n' "$items" | while IFS="$TAB" read -r kind name scope agent detail; do
+    flag=--global; dir=$HOME; [ "$scope" = project ] && { flag=--project; dir=$repo; }
+    if [ "$kind" = mcp ]; then
+      if [ "$(printf '%s' "$detail" | jq -r .secret)" = true ]; then warn "skipped MCP $name ($agent): its config holds a secret value; move the value to an env var first"; continue; fi
+      set -- mcp add "$name"
+      url=$(printf '%s' "$detail" | jq -r '.url // empty'); cmdline=$(printf '%s' "$detail" | jq -r '.cmd // empty')
+      if [ -n "$url" ]; then set -- "$@" --url "$url"
+        for h in $(printf '%s' "$detail" | jq -r '.headers[] | @base64'); do set -- "$@" --header "$(printf '%s' "$h" | base64 -d)"; done
+      elif [ -n "$cmdline" ]; then set -- "$@" --command "$cmdline"
+      else warn "skipped MCP $name: neither url nor command"; continue; fi
+      for e in $(printf '%s' "$detail" | jq -r '.envkeys[]'); do set -- "$@" --env "$e"; done
+      case $agent in   # Claude keeps its own copy under a different scope; remove it so dotagents' copy is the only one
+        Claude) (cd "$dir" && claude mcp remove "$name" -s user >/dev/null 2>&1) ;;
+        Claude-local) (cd "$dir" && claude mcp remove "$name" -s local >/dev/null 2>&1) ;;
+      esac
+      (cd "$dir" && dotagents "$flag" "$@" >/dev/null 2>&1) && say "moved MCP $name ($agent) into dotagents ($flag)" || warn "could not add MCP $name to dotagents"
+    else
+      src=$(printf '%s' "$detail" | jq -r '.repo // empty'); ref=$(printf '%s' "$detail" | jq -r '.ref // empty')
+      mkt=$(printf '%s' "$detail" | jq -r .market)
+      if [ "$scope" != user ]; then warn "skipped plugin $name: project-scoped plugins are not moved yet"; continue; fi
+      if [ -z "$src" ]; then warn "skipped plugin $name: its marketplace $mkt has no GitHub source"; continue; fi
+      if (cd "$dir" && dotagents --global add "$src" --name "$name" ${ref:+--ref "$ref"} >/dev/null 2>&1); then
+        claude plugin uninstall "$name@$mkt" --scope user >/dev/null 2>&1
+        say "moved plugin $name ($src) into dotagents; removed Claude's own copy"
+      else warn "could not add plugin $name ($src) to dotagents"; fi
+    fi
+  done
+  (cd "$HOME" && dotagents --global sync >/dev/null 2>&1) || true
+  [ -n "$repo" ] && [ -f "$repo/agents.toml" ] && (cd "$repo" && dotagents --project install >/dev/null 2>&1)
+  cmd_apply
 }
 
 cmd=${1:-help}; [ $# -gt 0 ] && shift
 for a in "$@"; do [ "$a" = --quiet ] && QUIET=1; done
 case $cmd in
-  install) cmd_install ;;
   apply) cmd_apply ;;
   check) cmd_check "$@" ;;
-  da) need npx; exec npx -y "@sentry/dotagents@$DOTAGENTS_VERSION" "$@" ;;
-  *) sed -n '2,6p' "$self" | sed 's/^# \{0,1\}//' ;;
+  *) sed -n '2,7p' "$self" | sed 's/^# \{0,1\}//' ;;
 esac

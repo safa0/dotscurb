@@ -7,3 +7,4 @@ ast-grep = "0.45.3"
 jq = "1.8.2"
 yq = "4.54.1"
 gh = "2.102.0"   # git credential helper; needed on Linux where there is no brew
+"npm:@sentry/dotagents" = "3.3.0"   # skills, MCP, plugins for every agent (needs Node 20+)
