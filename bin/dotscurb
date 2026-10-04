@@ -159,6 +159,7 @@ $(printf '%s' "$j" | jq -r '.[]')"
     printf '%s\n' "$declared" | grep -qx -- "$name" && continue
     printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$name" "$scope" "$agent" "$detail"
   done | sort -u -t "$TAB" -k1,3)
+  [ "$session" = 1 ] && [ "$projonly" = 0 ] && QUIET=1 sync_back
   if [ -z "$items" ]; then [ "$session" = 1 ] || echo "dotscurb: everything is managed by dotagents"; return 0; fi
   if [ "$fix" = 0 ]; then
     echo "dotscurb: installed outside dotagents, so other agents and machines don't get them:"
@@ -204,6 +205,7 @@ $(printf '%s' "$j" | jq -r '.[]')"
     fi
   done
   (cd "$HOME" && dotagents --global sync >/dev/null 2>&1) || true
+  sync_back
   [ -n "$repo" ] && [ -f "$repo/agents.toml" ] && (cd "$repo" && dotagents --project install >/dev/null 2>&1)
   cmd_apply
 }
@@ -336,6 +338,7 @@ cmd_init() {
     if [ -f "$A/policy.yaml" ]; then chezmoi add "$A/policy.yaml" && echo "  + dot_agents/policy.yaml (your existing one)"
     else mkdir -p "$src/dot_agents"; printf '# Your additions to the dotscurb policy (%s). Same keys; dotscurb apply combines both.\ndenyRead: []\ndenyWrite: []\ndenyCommands: []\n' "~/.local/share/dotscurb/defaults/policy.yaml" > "$src/dot_agents/policy.yaml"; echo "  + dot_agents/policy.yaml (empty)"; fi
   fi
+  sync_back
   [ -n "$changed" ] && printf 'Wrote:%s\n' "$changed"
 
   echo; echo "Changes in your dotfiles repo:"; git -C "$top" status --short 2>/dev/null
@@ -360,6 +363,18 @@ ensure_agents_files() { # standalone fallback when no dotfiles repo provides the
   [ -f "$A/agents.toml" ] || { mkdir -p "$A" && cp "$ROOT/defaults/agents.toml" "$A/agents.toml" && say "created ~/.agents/agents.toml"; }
 }
 
+# dotagents edits ~/.agents/agents.toml in place (dotagents add, sync adopting skills, check --fix), so copy it back
+# into the dotfiles repo; otherwise the next chezmoi apply would offer to undo those changes.
+# Inside a chezmoi run script chezmoi sets CHEZMOI_SOURCE_DIR (calling chezmoi there would deadlock on its lock).
+sync_back() {
+  [ -f "$A/agents.toml" ] || return 0
+  if [ -n "${CHEZMOI_SOURCE_DIR:-}" ]; then sp="$CHEZMOI_SOURCE_DIR/dot_agents/agents.toml"
+  else command -v chezmoi >/dev/null 2>&1 || return 0; sp=$(chezmoi source-path "$A/agents.toml" 2>/dev/null) || return 0; fi
+  case $sp in */agents.toml) ;; *) return 0 ;; esac   # only a plain file in the repo, never a template
+  [ -f "$sp" ] && ! cmp -s "$A/agents.toml" "$sp" || return 0
+  cp "$A/agents.toml" "$sp" && say "copied ~/.agents/agents.toml back into your dotfiles repo (dotagents changed it); commit it there"
+}
+
 # --- setup / doctor --------------------------------------------------------------------------------------
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/dotscurb"
 AGENTS_CLI="claude codex cursor-agent pi opencode"
@@ -376,6 +391,7 @@ cmd_setup() {
     (cd "$HOME" && { dotagents --global doctor >/dev/null 2>&1 || dotagents --global install >/dev/null 2>&1; dotagents --global sync >/dev/null 2>&1; }) \
       || warn "dotagents failed; run 'dotagents --global doctor'"
   else warn "dotagents not available (needs Node 20+; answer yes to node when chezmoi asks, or install it)"; fi
+  sync_back
   # herdr: its agent-state hooks for every installed agent it supports (claude, codex, pi, opencode)
   if command -v herdr >/dev/null 2>&1; then
     st=$(herdr integration status 2>/dev/null)
