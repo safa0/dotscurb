@@ -1,10 +1,33 @@
-{{- /* dotscurb template: asked once per machine; answers stay in this machine's chezmoi config, never in the repo. */ -}}
+{{- /* dotscurb template: asked once per machine; answers stay in this machine's chezmoi config, never in the repo.
+       Re-ask with: chezmoi init --prompt */ -}}
 {{- $name := promptStringOnce . "name" "Your full name (for git commits)" -}}
 {{- $email := promptStringOnce . "email" "Your email (for git commits)" -}}
 {{- $github := promptStringOnce . "github" "Your GitHub username (for the agent co-author line)" -}}
 {{- $githubId := promptStringOnce . "githubId" "Your GitHub numeric id (gh api user --jq .id)" -}}
+{{- $projects := promptStringOnce . "projects" "Folder that holds your git repos (dotscurb doctor checks them)" "~/code" -}}
+{{- /* Optional tools, installed by mise. Default yes only when the tool isn't on this machine yet. */ -}}
+{{- $tools := dict -}}
+{{- range $t := list
+      (list "node" "node" "Node.js 22 (dotagents needs Node 20+)")
+      (list "claude" "claude" "Claude Code")
+      (list "codex" "codex" "Codex CLI")
+      (list "cursor" "cursor-agent" "Cursor CLI")
+      (list "pi" "pi" "pi coding agent")
+      (list "herdr" "herdr" "herdr (terminal multiplexer for agents)")
+      (list "worktrunk" "wt" "worktrunk (wt: git worktree helper)")
+      (list "direnv" "direnv" "direnv (per-folder env, no secrets)") -}}
+{{-   $key := index $t 0 -}}
+{{-   $has := lookPath (index $t 1) -}}
+{{-   $q := printf "Install %s with mise?%s" (index $t 2) (ternary " (already installed here)" "" (ne $has "")) -}}
+{{-   $_ := set $tools $key (promptBoolOnce $ (printf "tools.%s" $key) $q (eq $has "")) -}}
+{{- end -}}
 [data]
     name = {{ $name | quote }}
     email = {{ $email | quote }}
     github = {{ $github | quote }}
     githubId = {{ $githubId | quote }}
+    projects = {{ $projects | quote }}
+[data.tools]
+{{- range $k, $v := $tools }}
+    {{ $k }} = {{ $v }}
+{{- end }}

@@ -3,6 +3,7 @@
 t=$(mktemp); cat > "$t"
 git config -f "$t" core.hooksPath "{{ .chezmoi.workingTree }}/hooks"
 git config -f "$t" dotscurb.coauthor {{ printf "%s's Agent <%s+%s@users.noreply.github.com>" .github .githubId .github | quote }}
+git config -f "$t" --get-all dotscurb.projects | grep -qxF {{ .projects | quote }} || git config -f "$t" --add dotscurb.projects {{ .projects | quote }}
 [ -n "$(git config -f "$t" --get user.name)" ] || git config -f "$t" user.name {{ .name | quote }}
 [ -n "$(git config -f "$t" --get user.email)" ] || git config -f "$t" user.email {{ .email | quote }}
 cat "$t"; rm -f "$t"

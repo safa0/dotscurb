@@ -1,0 +1,10 @@
+#!/bin/sh
+# dotscurb template: appends three guarded lines to ~/.bashrc if missing (direnv hook, worktrunk shell
+# integration, Cursor CLI file credential store so it works over SSH). Everything else stays yours.
+t=$(mktemp); cat > "$t"; cat "$t"
+add() { grep -qF "$1" "$t" || printf '%s\n' "$1"; }
+grep -q '# dotscurb$' "$t" || { [ -s "$t" ] && echo; }
+add 'export AGENT_CLI_CREDENTIAL_STORE=file   # dotscurb'
+add 'command -v direnv >/dev/null && eval "$(direnv hook bash)"   # dotscurb'
+add 'command -v wt >/dev/null && eval "$(command wt config shell init bash)"   # dotscurb'
+rm -f "$t"

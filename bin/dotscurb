@@ -5,6 +5,9 @@
 #                          dotagents declares (dotagents only generates the marketplace)
 #   dotscurb check         list MCP servers and plugins installed outside dotagents (read-only)
 #   dotscurb check --fix   move them into dotagents and remove the native copy (never copies secret values)
+#   dotscurb setup         install tools (mise), skills/MCP/plugins (dotagents), herdr hooks, then apply; the
+#                          first time it also runs doctor. chezmoi runs this after every apply.
+#   dotscurb doctor        checklist: tools, git, agent logins, herdr, unmanaged items, your project folders
 set -u
 
 self=$0
@@ -138,8 +141,8 @@ native_items() { # TSV: kind name scope agent detail
 
 cmd_check() {
   need jq; need yq
-  session=0; fix=0
-  for a in "$@"; do case $a in --session) session=1 ;; --fix) fix=1 ;; esac; done
+  session=0; fix=0; projonly=0
+  for a in "$@"; do case $a in --session) session=1 ;; --fix) fix=1 ;; --project-only) projonly=1 ;; esac; done
   repo=$(git rev-parse --show-toplevel 2>/dev/null || true)
   declared=""
   for t in "$A/agents.toml" ${repo:+"$repo/agents.toml"}; do
@@ -150,6 +153,7 @@ $(printf '%s' "$j" | jq -r '.[]')"
   done
   items=$(native_items "$repo" | while IFS="$TAB" read -r kind name scope agent detail; do
     [ -n "$name" ] || continue
+    [ "$projonly" = 1 ] && [ "$scope" = user ] && continue
     printf '%s\n' "$declared" | grep -qx -- "$name" && continue
     printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$name" "$scope" "$agent" "$detail"
   done | sort -u -t "$TAB" -k1,3)
@@ -202,10 +206,103 @@ $(printf '%s' "$j" | jq -r '.[]')"
   cmd_apply
 }
 
+# --- setup / doctor --------------------------------------------------------------------------------------
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/dotscurb"
+AGENTS_CLI="claude codex cursor-agent pi opencode"
+
+cmd_setup() {
+  if ! command -v mise >/dev/null 2>&1; then
+    say "installing mise…"
+    if command -v brew >/dev/null 2>&1; then brew install mise >/dev/null; else curl -fsSL https://mise.run | sh >/dev/null; fi \
+      || { warn "could not install mise; see https://mise.jdx.dev/getting-started.html"; exit 1; }
+  fi
+  mise install --yes >/dev/null 2>&1 || warn "mise install failed; run 'mise install' to see why"
+  if command -v dotagents >/dev/null 2>&1; then
+    (cd "$HOME" && { dotagents --global doctor >/dev/null 2>&1 || dotagents --global install >/dev/null 2>&1; dotagents --global sync >/dev/null 2>&1; }) \
+      || warn "dotagents failed; run 'dotagents --global doctor'"
+  else warn "dotagents not available (needs Node 20+; answer yes to node when chezmoi asks, or install it)"; fi
+  # herdr: its agent-state hooks for every installed agent it supports (claude, codex, pi, opencode)
+  if command -v herdr >/dev/null 2>&1; then
+    st=$(herdr integration status 2>/dev/null)
+    for a in claude codex pi opencode; do command -v "$a" >/dev/null 2>&1 || continue
+      printf '%s\n' "$st" | grep -q "^$a: not installed" || continue
+      herdr integration install "$a" >/dev/null 2>&1 && say "herdr: installed the $a integration" || warn "herdr: could not install the $a integration"
+    done
+  fi
+  cmd_apply
+  if [ ! -f "$STATE/onboarded" ]; then
+    QUIET=0; cmd_doctor; mkdir -p "$STATE" && date > "$STATE/onboarded"
+  fi
+}
+
+# project folders: git config dotscurb.projects (one or more values; ~ allowed)
+project_dirs() { git config --global --get-all dotscurb.projects 2>/dev/null | sed "s|^~|$HOME|"; }
+project_repos() { # git repos up to two levels below each project folder (worktree folders skipped)
+  project_dirs | while IFS= read -r d; do [ -d "$d" ] || continue
+    for g in "$d"/*/.git "$d"/*/*/.git; do [ -e "$g" ] || continue
+      r=${g%/.git}; case $r in *-worktrees/*) continue ;; esac; [ -d "$g" ] && printf '%s\n' "$r"; done
+  done
+}
+
+cmd_doctor() {
+  todo=0
+  ok() { printf '  ✓ %s\n' "$1"; }
+  no() { printf '  ✗ %s\n      → %s\n' "$1" "$2"; todo=$((todo+1)); }
+  echo "dotscurb doctor"
+  echo "Tools"
+  for c in git mise jq yq rg fd ast-grep gh; do command -v "$c" >/dev/null 2>&1 && ok "$c" || no "$c missing" "mise install"; done
+  if command -v node >/dev/null 2>&1 && [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -ge 20 ]; then ok "node $(node -v)"
+  else no "Node 20+ missing (dotagents needs it)" "add node = \"22\" to ~/.config/mise/conf.d/dotscurb-extras.toml, then mise install"; fi
+  command -v dotagents >/dev/null 2>&1 && ok "dotagents" || no "dotagents missing" "mise install (needs Node 20+)"
+  echo "Git"
+  case $(git config --global core.hooksPath 2>/dev/null) in *dotscurb/hooks) ok "hooks path → dotscurb" ;;
+    *) no "core.hooksPath is not dotscurb's hooks" "chezmoi apply (sets it in ~/.gitconfig)" ;; esac
+  [ -n "$(git config --global user.name)" ] && [ -n "$(git config --global user.email)" ] && ok "name and email set" || no "git name/email not set" "git config --global user.name …; user.email …"
+  [ -n "$(git config --global dotscurb.coauthor)" ] && ok "agent co-author line set" || no "dotscurb.coauthor not set" "chezmoi apply"
+  if command -v gh >/dev/null 2>&1; then gh auth status >/dev/null 2>&1 && ok "GitHub CLI logged in" || no "GitHub CLI not logged in" "gh auth login"; fi
+  echo "Agents (log in once per machine)"
+  n=0
+  if command -v claude >/dev/null 2>&1; then n=1; claude auth status 2>/dev/null | grep -q '"loggedIn": true' && ok "Claude Code logged in" || no "Claude Code not logged in" "claude (it asks you to log in)"; fi
+  if command -v codex >/dev/null 2>&1; then n=1; codex login status 2>&1 | grep -qi '^logged in' && ok "Codex logged in" || no "Codex not logged in" "codex login"; fi
+  if command -v cursor-agent >/dev/null 2>&1; then n=1; cursor-agent status 2>&1 | grep -qi 'logged in as' && ok "Cursor CLI logged in" || no "Cursor CLI not logged in" "cursor-agent login"; fi
+  if command -v pi >/dev/null 2>&1; then n=1; [ -s "$HOME/.pi/agent/auth.json" ] && ok "pi has credentials" || no "pi has no credentials" "pi, then /login"; fi
+  if command -v opencode >/dev/null 2>&1; then n=1; ok "OpenCode installed (log in with: opencode auth login)"; fi
+  [ "$n" = 1 ] || no "no coding agent installed" "re-run chezmoi init and answer yes to one, or install one yourself"
+  if command -v herdr >/dev/null 2>&1; then
+    echo "herdr"
+    st=$(herdr integration status 2>/dev/null)
+    for a in claude codex pi opencode; do command -v "$a" >/dev/null 2>&1 || continue
+      printf '%s\n' "$st" | grep -q "^$a: not installed" && no "herdr integration for $a missing" "herdr integration install $a" || ok "herdr integration for $a"; done
+  fi
+  echo "Skills, MCP servers, plugins"
+  if command -v dotagents >/dev/null 2>&1; then
+    (cd "$HOME" && dotagents --global doctor >/dev/null 2>&1) && ok "dotagents: everything installed" || no "dotagents reports problems" "dotagents --global doctor"
+  fi
+  out=$(cd "$HOME" && cmd_check --session 2>&1)
+  [ -z "$out" ] && ok "nothing installed outside dotagents" || { printf '%s\n' "$out" | sed 's/^/    /'; no "items installed directly in an agent" "dotscurb check --fix"; }
+  echo "Projects"
+  dirs=$(project_dirs)
+  if [ -z "$dirs" ]; then no "no project folder set" "git config --global --add dotscurb.projects ~/code   (chezmoi asks this on init)"
+  else
+    printf '%s\n' "$dirs" | while IFS= read -r d; do [ -d "$d" ] && ok "project folder ${d#$HOME/}" || printf '  ✗ project folder %s does not exist\n' "$d"; done
+    for r in $(project_repos); do
+      hp=$(git -C "$r" config --local core.hooksPath 2>/dev/null)
+      [ -n "$hp" ] && no "${r#$HOME/}: own core.hooksPath ($hp) skips dotscurb's hooks" "if the repo doesn't need it: git -C $r config --unset core.hooksPath (husky etc. need it; see ROADMAP.md)"
+      out=$(cd "$r" && cmd_check --session --project-only 2>&1)
+      [ -n "$out" ] && no "${r#$HOME/}: project MCP/plugins outside dotagents" "cd $r && dotscurb check --fix"
+    done
+  fi
+  echo
+  [ "$todo" = 0 ] && echo "All set." || echo "$todo thing(s) to do above. Re-run 'dotscurb doctor' any time."
+  return 0
+}
+
 cmd=${1:-help}; [ $# -gt 0 ] && shift
 for a in "$@"; do [ "$a" = --quiet ] && QUIET=1; done
 case $cmd in
   apply) cmd_apply ;;
   check) cmd_check "$@" ;;
-  *) sed -n '2,7p' "$self" | sed 's/^# \{0,1\}//' ;;
+  setup) cmd_setup ;;
+  doctor) cmd_doctor ;;
+  *) sed -n '2,10p' "$self" | sed 's/^# \{0,1\}//' ;;
 esac

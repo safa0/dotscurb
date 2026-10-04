@@ -1,0 +1,26 @@
+# Optional tools you chose at `chezmoi init` (dotscurb template). Change answers: chezmoi init --prompt
+[tools]
+{{- if .tools.node }}
+node = "22"
+{{- end }}
+{{- if .tools.claude }}
+claude = "latest"
+{{- end }}
+{{- if .tools.codex }}
+codex = "latest"
+{{- end }}
+{{- if .tools.cursor }}
+cursor-agent = "latest"
+{{- end }}
+{{- if .tools.pi }}
+"npm:@earendil-works/pi-coding-agent" = "latest"
+{{- end }}
+{{- if .tools.herdr }}
+herdr = "latest"
+{{- end }}
+{{- if .tools.worktrunk }}
+worktrunk = "latest"
+{{- end }}
+{{- if .tools.direnv }}
+direnv = "latest"
+{{- end }}

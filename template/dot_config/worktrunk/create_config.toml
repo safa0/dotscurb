@@ -1,0 +1,2 @@
+# worktrunk (wt): worktrees next to the repo, as the shared AGENTS.md rules say. Created once by dotscurb; yours to edit.
+worktree-path = "{{ repo_path }}/../{{ repo }}-worktrees/{{ branch | sanitize }}"
