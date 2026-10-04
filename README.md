@@ -30,8 +30,10 @@ dotscurb next to it. Every user has their own repo; nobody points at someone els
 Prerequisites: `git`, `curl`, `zsh` or `bash`, GitHub access to this repo (`gh auth login`).
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/safa0/dotscurb/main/install.sh | sh
+gh api repos/safa0/dotscurb/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
 ```
+(The repo is private, so plain `curl` from raw.githubusercontent.com returns 404; `gh` sends your login. Once the repo
+is public: `curl -fsSL https://raw.githubusercontent.com/safa0/dotscurb/main/install.sh | sh`.)
 
 The installer clones dotscurb to `~/.local/share/dotscurb` and runs `dotscurb init`, which:
 1. installs chezmoi if missing;

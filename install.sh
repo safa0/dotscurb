@@ -1,7 +1,7 @@
 #!/bin/sh
 # dotscurb installer: fetches dotscurb to ~/.local/share/dotscurb, then runs `dotscurb init`, which wires it into
 # YOUR OWN chezmoi dotfiles repo (or starts one). Run:
-#   curl -fsSL https://raw.githubusercontent.com/safa0/dotscurb/main/install.sh | sh
+#   gh api repos/safa0/dotscurb/contents/install.sh -H "Accept: application/vnd.github.raw" | sh   (private repo)
 set -eu
 REPO=${DOTSCURB_REPO:-https://github.com/safa0/dotscurb.git}
 D="$HOME/.local/share/dotscurb"
