@@ -1,10 +1,11 @@
 #!/bin/sh
-# dotscurb template: appends three guarded lines to ~/.bashrc if missing (direnv hook, worktrunk shell
-# integration, Cursor CLI file credential store so it works over SSH). Everything else stays yours.
+# dotscurb: appends what's missing of: Cursor CLI file credential store (works over SSH), direnv hook, worktrunk
+# shell integration. Each line is guarded, so it is harmless when the tool isn't installed. The rest stays yours.
 t=$(mktemp); cat > "$t"; cat "$t"
-add() { grep -qF "$1" "$t" || printf '%s\n' "$1"; }
-grep -q '# dotscurb$' "$t" || { [ -s "$t" ] && echo; }
-add 'export AGENT_CLI_CREDENTIAL_STORE=file   # dotscurb'
-add 'command -v direnv >/dev/null && eval "$(direnv hook bash)"   # dotscurb'
-add 'command -v wt >/dev/null && eval "$(command wt config shell init bash)"   # dotscurb'
+out=$(
+  grep -q 'AGENT_CLI_CREDENTIAL_STORE' "$t" || echo 'export AGENT_CLI_CREDENTIAL_STORE=file   # dotscurb'
+  grep -q 'direnv hook' "$t" || echo 'command -v direnv >/dev/null && eval "$(direnv hook bash)"   # dotscurb'
+  grep -q 'wt config shell init' "$t" || echo 'command -v wt >/dev/null && eval "$(command wt config shell init bash)"   # dotscurb'
+)
+[ -n "$out" ] && { [ -s "$t" ] && echo; printf '%s\n' "$out"; }
 rm -f "$t"

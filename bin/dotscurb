@@ -260,7 +260,8 @@ cmd_init() {
   if [ ! -f "$data" ] || [ "$reconf" = 1 ]; then
     gh_login=""; gh_id=""
     command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && { gh_login=$(gh api user --jq .login 2>/dev/null); gh_id=$(gh api user --jq .id 2>/dev/null); }
-    pdef=""; for d in "$HOME/code" "$HOME/Documents/repos" "$HOME/src" "$HOME/projects" "$HOME/dev"; do [ -d "$d" ] && pdef="$pdef${pdef:+, }~${d#$HOME}"; done
+    pdef=$(git config --global --get-all dotscurb.projects 2>/dev/null | paste -sd, - | sed 's/,/, /g')
+    [ -n "$pdef" ] || for d in "$HOME/code" "$HOME/Documents/repos" "$HOME/src" "$HOME/projects" "$HOME/dev"; do [ -d "$d" ] && pdef="$pdef${pdef:+, }~${d#$HOME}"; done
     name=$(ask "Your full name (git commits)" "$(git config --global user.name)")
     email=$(ask "Your email (git commits)" "$(git config --global user.email)")
     github=$(ask "Your GitHub username (agent co-author line)" "$gh_login")
