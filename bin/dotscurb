@@ -81,6 +81,20 @@ cmd_apply() {
     for n in $have; do printf '%s\n' "$want" | grep -qx -- "$n" && continue
       claude plugin uninstall "$n@dotagents" --scope user >/dev/null 2>&1 && say "Claude: switched off plugin $n (no longer in agents.toml)"; done
   fi
+  # 4. plugins declared in this repo's agents.toml → switched on in Claude for this project only (scope local).
+  #    dotagents' project marketplace is also named "dotagents", which Claude can't register twice, so Claude
+  #    installs from the plugin's own marketplace (recorded in the copy dotagents keeps).
+  repo=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  if command -v claude >/dev/null 2>&1 && [ -n "$repo" ] && [ -f "$repo/agents.toml" ]; then
+    for n in $(yq -p toml -o json '[(.plugins // [])[].name]' "$repo/agents.toml" | jq -r '.[]'); do
+      m=$(jq -r '.name // empty' "$repo/.agents/plugins/$n/.claude-plugin/marketplace.json" 2>/dev/null)
+      src=$(yq -p toml -o json "[(.plugins // [])[] | select(.name == \"$n\") | .source][0]" "$repo/agents.toml" | jq -r '. // empty')
+      [ -n "$m" ] && [ -n "$src" ] || { warn "Claude: plugin $n has no Claude marketplace; not switched on"; continue; }
+      jq -e --arg m "$m" '.[$m]' "$CP/known_marketplaces.json" >/dev/null 2>&1 || claude plugin marketplace add "$src" >/dev/null 2>&1
+      jq -e --arg k "$n@$m" --arg r "$repo" '.plugins[$k] // [] | any(.projectPath == $r or .scope == "user")' "$CP/installed_plugins.json" >/dev/null 2>&1 \
+        || { (cd "$repo" && claude plugin install "$n@$m" --scope local >/dev/null 2>&1) && say "Claude: switched on plugin $n for this project" || warn "Claude: could not install plugin $n for this project"; }
+    done
+  fi
 }
 
 # --- check / fix -----------------------------------------------------------------------------------------
@@ -169,8 +183,14 @@ $(printf '%s' "$j" | jq -r '.[]')"
     else
       src=$(printf '%s' "$detail" | jq -r '.repo // empty'); ref=$(printf '%s' "$detail" | jq -r '.ref // empty')
       mkt=$(printf '%s' "$detail" | jq -r .market)
-      if [ "$scope" != user ]; then warn "skipped plugin $name: project-scoped plugins are not moved yet"; continue; fi
       if [ -z "$src" ]; then warn "skipped plugin $name: its marketplace $mkt has no GitHub source"; continue; fi
+      if [ "$scope" != user ]; then   # project-level: dotagents records it in the repo; Claude keeps its project install
+        [ -f "$repo/agents.toml" ] || { agents=$(yq -p toml -o json '.agents // []' "$A/agents.toml" 2>/dev/null | jq -c .); printf 'version = 1\nagents = %s\n' "${agents:-[]}" > "$repo/agents.toml"; }
+        (cd "$repo" && dotagents --project add "$src" --name "$name" ${ref:+--ref "$ref"} >/dev/null 2>&1) \
+          && say "recorded plugin $name ($src) in this project's agents.toml; Claude keeps its project install" \
+          || warn "could not add plugin $name ($src) to this project's agents.toml"
+        continue
+      fi
       if (cd "$dir" && dotagents --global add "$src" --name "$name" ${ref:+--ref "$ref"} >/dev/null 2>&1); then
         claude plugin uninstall "$name@$mkt" --scope user >/dev/null 2>&1
         say "moved plugin $name ($src) into dotagents; removed Claude's own copy"

@@ -45,7 +45,8 @@ Prerequisites: `git`, `curl`, Node 20+ (for dotagents), GitHub access to this re
 ## Scope
 
 v1: the hooks, policy rendering for Claude and Cursor, Claude plugin switch-on, `check` / `check --fix` for MCP
-servers (all five agents) and user-level Claude plugins. Tested on macOS and a fresh Ubuntu container.
+servers (all five agents) and Claude plugins: user-level ones move to dotagents, project-level ones are recorded in the
+repo's `agents.toml` and switched on in Claude per project. Tested on macOS and a fresh Ubuntu container.
 
-Not in v1: secrets store, project-level plugin moves, Codex and OpenCode policy, plugin switch-on in Cursor and Codex,
+Not in v1: secrets store, Codex and OpenCode policy, plugin switch-on in Cursor and Codex,
 session notices outside Claude, upstream pull requests to dotagents.
