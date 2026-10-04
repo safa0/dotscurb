@@ -323,7 +323,7 @@ cmd_init() {
   [ -n "$changed" ] && printf 'Wrote:%s\n' "$changed"
 
   echo; echo "Changes in your dotfiles repo:"; git -C "$top" status --short 2>/dev/null
-  echo; chezmoi diff --exclude scripts 2>/dev/null | head -80
+  echo; chezmoi diff --no-pager --exclude scripts 2>/dev/null | head -80
   yes_no "Apply to your home folder now?" y || { echo "Not applied. Later: chezmoi apply"; return 0; }
   chezmoi apply || warn "chezmoi apply reported errors"
   if [ "$created" = 1 ]; then
