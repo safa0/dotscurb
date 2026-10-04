@@ -222,7 +222,7 @@ uv:uv:uv (Python tools and MCP servers)
 gitleaks:gitleaks:gitleaks (secret scanner for commits)"
 
 ask() { # ask <question> <default> → answer on stdout (default when there is no terminal)
-  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  if ( : < /dev/tty ) 2>/dev/null; then
     printf '%s%s: ' "$1" "${2:+ [$2]}" > /dev/tty; IFS= read -r _a < /dev/tty || _a=""
   else _a=""; fi
   printf '%s' "${_a:-$2}"
@@ -327,7 +327,9 @@ cmd_init() {
   yes_no "Apply to your home folder now?" y || { echo "Not applied. Later: chezmoi apply"; return 0; }
   chezmoi apply || warn "chezmoi apply reported errors"
   if [ "$created" = 1 ]; then
-    git -C "$top" add -A && git -C "$top" commit -qm "feat(dotfiles): start dotfiles with dotscurb" && echo "Committed in $top"
+    if [ -n "$(git config --global user.name)" ] && [ -n "$(git config --global user.email)" ]; then
+      git -C "$top" add -A && git -C "$top" commit -qm "feat(dotfiles): start dotfiles with dotscurb" && echo "Committed in $top"
+    else echo "Not committed: git has no name/email yet. Set them (dotscurb init --reconfigure), then: chezmoi cd; git add -A; git commit"; fi
     if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && yes_no "Create a PRIVATE GitHub repo 'dotfiles' for it and push?" y; then
       (cd "$top" && gh repo create dotfiles --private --source . --push) && echo "Other machines: dotscurb's install.sh, then give it this repo."
     else echo "Your dotfiles repo is local only. Add a remote later: chezmoi cd; gh repo create dotfiles --private --source . --push"; fi
