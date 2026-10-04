@@ -258,18 +258,28 @@ cmd_init() {
   # 1. answers → .chezmoidata/dotscurb.toml (personal, in your repo) and the optional-tools file
   data="$src/.chezmoidata/dotscurb.toml"
   if [ ! -f "$data" ] || [ "$reconf" = 1 ]; then
-    gh_login=""; gh_id=""
-    command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && { gh_login=$(gh api user --jq .login 2>/dev/null); gh_id=$(gh api user --jq .id 2>/dev/null); }
+    gh_login=""; gh_id=""; gh_name=""; gh_mail=""
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+      u=$(gh api user --jq '[.login, (.id|tostring), (.name // ""), (.email // "")] | join("\t")' 2>/dev/null)
+      gh_login=$(printf '%s' "$u" | cut -f1); gh_id=$(printf '%s' "$u" | cut -f2)
+      gh_name=$(printf '%s' "$u" | cut -f3); gh_mail=$(printf '%s' "$u" | cut -f4)
+      # private email: the primary one (needs the user:email scope), else GitHub's noreply address
+      [ -n "$gh_mail" ] || gh_mail=$(gh api user/emails --jq '[.[] | select(.primary)][0].email // empty' 2>/dev/null) || gh_mail=""
+      case $gh_mail in *@*) case $gh_mail in *[{\ ]*) gh_mail="" ;; esac ;; *) gh_mail="" ;; esac
+      [ -n "$gh_mail" ] || gh_mail="$gh_id+$gh_login@users.noreply.github.com"
+      echo "GitHub CLI is logged in as $gh_login; using it for the defaults below."
+    fi
     pdef=$(git config --global --get-all dotscurb.projects 2>/dev/null | paste -sd, - | sed 's/,/, /g')
     [ -n "$pdef" ] || for d in "$HOME/code" "$HOME/Documents/repos" "$HOME/src" "$HOME/projects" "$HOME/dev"; do [ -d "$d" ] && pdef="$pdef${pdef:+, }~${d#$HOME}"; done
-    gh_email=$(git config --global user.email)
-    [ -z "$gh_email" ] && [ -n "$gh_id" ] && gh_email="$gh_id+$gh_login@users.noreply.github.com"
-    name=$(ask "Your full name (git commits)" "$(git config --global user.name)")
+    n0=$(git config --global user.name); name=$(ask "Your full name (git commits)" "${n0:-$gh_name}")
     while [ -z "$name" ] && ( : < /dev/tty ) 2>/dev/null; do name=$(ask "  Name is required for git commits" ""); done
-    email=$(ask "Your email (git commits)" "$gh_email")
+    e0=$(git config --global user.email); email=$(ask "Your email (git commits)" "${e0:-$gh_mail}")
     while [ -z "$email" ] && ( : < /dev/tty ) 2>/dev/null; do email=$(ask "  Email is required for git commits" ""); done
-    github=$(ask "Your GitHub username (agent co-author line)" "$gh_login")
-    gid=$(ask "Your GitHub numeric id (gh api user --jq .id)" "$gh_id")
+    if [ -n "$gh_login" ]; then github=$gh_login; gid=$gh_id
+    else
+      github=$(ask "Your GitHub username (agent co-author line)" "")
+      gid=$(ask "Your GitHub numeric id (gh api user --jq .id)" "")
+    fi
     projects=$(ask "Folders that hold your git repos, comma-separated" "${pdef:-~/code}")
     mkdir -p "$src/.chezmoidata"
     { echo "# dotscurb answers (dotscurb init). Personal: lives in your dotfiles repo, not in dotscurb."
