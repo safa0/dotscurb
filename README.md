@@ -50,6 +50,9 @@ The installer clones dotscurb to `~/.local/share/dotscurb` and runs `dotscurb in
    `dotscurb doctor` checklist (agent logins etc.);
 6. new repo: commits it and offers to create a private GitHub repo `dotfiles` and push. Existing repo: you review and commit.
 
+Start over: `dotscurb uninstall` removes dotscurb's lines, links and files from your home folder and your dotfiles
+repo (it keeps your repo, `agents.toml`, policy, skills and logins), then run the installer again.
+
 Another machine: run the same installer and give it your dotfiles repo. Change answers: `dotscurb init --reconfigure`.
 Update: `chezmoi update`.
 

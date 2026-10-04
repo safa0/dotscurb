@@ -1,6 +1,6 @@
-# dotagents (getsentry/dotagents) global config, created once by dotscurb; yours to edit.
-# Run dotagents through `dotscurb da …` (pinned version). Things listed here are on in EVERY project;
-# switch things on for one project with `dotscurb da --project add …` in that repo instead.
+# dotagents (getsentry/dotagents) global config: yours, kept in your dotfiles repo. Things listed here are on in
+# EVERY project and for every agent. Add with `dotagents add …` / `dotagents mcp add …`; for one project only, run
+# `dotagents --project add …` in that repo instead.
 version = 1
 agents = ["claude", "cursor", "codex", "pi", "opencode"]
 

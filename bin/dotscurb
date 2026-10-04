@@ -7,6 +7,8 @@
 #   dotscurb check --fix   move them into dotagents and remove the native copy (never copies secret values)
 #   dotscurb init          first-time setup: asks a few questions, wires dotscurb into your own chezmoi dotfiles
 #                          repo (creates one if you have none), then applies. Again with: dotscurb init --reconfigure
+#   dotscurb uninstall     removes dotscurb from your home folder and dotfiles repo (keeps your agents.toml, policy,
+#                          logins and agent settings), so you can start again with install.sh
 #   dotscurb setup         install tools (mise), skills/MCP/plugins (dotagents), herdr hooks, then apply; the
 #                          first time it also runs doctor. chezmoi runs this after every apply.
 #   dotscurb doctor        checklist: tools, git, agent logins, herdr, unmanaged items, your project folders
@@ -375,6 +377,77 @@ sync_back() {
   cp "$A/agents.toml" "$sp" && say "copied ~/.agents/agents.toml back into your dotfiles repo (dotagents changed it); commit it there"
 }
 
+# dotagents shares skills by making ~/.claude/skills a link to ~/.agents/skills, and refuses to sync while it is a
+# real folder (skills installed in Claude only). Move those skills into the shared folder so every agent gets them
+# (dotagents then adopts them into agents.toml); drop links that already point there.
+merge_claude_skills() {
+  cs="$HOME/.claude/skills"
+  [ -d "$cs" ] && [ ! -L "$cs" ] || return 0
+  mkdir -p "$A/skills"
+  for e in "$cs"/* "$cs"/.[!.]*; do [ -e "$e" ] || [ -L "$e" ] || continue
+    n=$(basename "$e")
+    if [ -L "$e" ]; then
+      case $(readlink "$e") in "$A/skills/"*|*/.agents/skills/*) rm "$e"; continue ;; esac
+    fi
+    if [ -e "$A/skills/$n" ]; then warn "~/.claude/skills/$n also exists in ~/.agents/skills; left in place, merge it by hand"; continue; fi
+    mv "$e" "$A/skills/$n" && say "moved Claude skill $n to ~/.agents/skills (now shared with every agent)"
+  done
+  rmdir "$cs" 2>/dev/null || warn "~/.claude/skills still has entries; dotagents can't link it until they're moved"
+}
+
+# --- uninstall ---------------------------------------------------------------------------------------------
+strip_marked() { # strip_marked <file>: drop lines ending in "# dotscurb" (and a blank line left right before them)
+  [ -f "$1" ] && grep -q '# dotscurb$' "$1" || return 0
+  t=$(mktemp); awk '/# dotscurb$/ {next} {print}' "$1" | awk 'NF {for (i=0;i<b;i++) print ""; b=0; print; next} {b++} END {}' > "$t"
+  cat "$t" > "$1"; rm -f "$t"; echo "  ~ ${1#$HOME/}: removed dotscurb's lines"
+}
+unset_git() { # unset_git <gitconfig file>
+  [ -f "$1" ] || return 0
+  case $(git config -f "$1" core.hooksPath 2>/dev/null) in *dotscurb/hooks) git config -f "$1" --unset core.hooksPath ;; esac
+  git config -f "$1" --remove-section dotscurb 2>/dev/null && echo "  ~ ${1#$HOME/}: removed hooksPath and [dotscurb]"
+  true
+}
+cmd_uninstall() {
+  echo "This removes dotscurb from your home folder and from your dotfiles repo. It keeps your dotfiles repo,"
+  echo "~/.agents/agents.toml, policy.yaml, skills, agent logins, and the tools mise installed."
+  case " $* " in *" --yes "*) ;; *) yes_no "Continue?" n || { echo "Nothing changed."; return 0; } ;; esac
+  src=$(chezmoi source-path 2>/dev/null || true)
+  if [ -n "$src" ] && [ -d "$src" ]; then
+    echo "Your dotfiles repo ($src):"
+    ( cd "$ROOT/template" && find . -type f | sed 's#^\./##' ) | while IFS= read -r rp; do
+      [ -f "$src/$rp" ] && cmp -s "$ROOT/template/$rp" "$src/$rp" && rm "$src/$rp" && echo "  - $rp"
+    done
+    # links and run scripts that point at dotscurb, also ones written by hand before dotscurb init existed
+    find "$src" -path "$src/.git" -prune -o -type f \( -name 'symlink_*' -o -path '*/.chezmoiscripts/*' \) -print | while IFS= read -r f; do
+      grep -qE 'local/share/dotscurb|dotscurb (setup|apply)' "$f" && rm "$f" && echo "  - ${f#$src/}"; done
+    for f in .chezmoidata/dotscurb.toml dot_config/mise/conf.d/dotscurb-extras.toml; do [ -f "$src/$f" ] && rm "$src/$f" && echo "  - $f"; done
+    for f in "$src"/.chezmoiexternal.toml "$src"/.chezmoiexternal.toml.tmpl; do [ -f "$f" ] || continue
+      awk '/^# dotscurb:/ {skip=1; next} skip && /^\[".local\/share\/dotscurb"\]/ {next} skip && /^ +(type|url|refreshPeriod) *=/ {next} {skip=0; print}' "$f" > "$f.new"
+      if ! cmp -s "$f" "$f.new"; then mv "$f.new" "$f"; echo "  ~ ${f#$src/}: removed the dotscurb fetch"; else rm "$f.new"; fi
+      grep -q '[^[:space:]]' "$f" || { rm "$f"; echo "  - ${f#$src/} (empty)"; }
+    done
+    for f in "$src"/dot_zshrc "$src"/dot_bashrc "$src"/dot_zshenv "$src"/dot_zprofile "$src"/dot_profile; do strip_marked "$f"; done
+    unset_git "$src/dot_gitconfig"
+    find "$src" -type d -empty -not -path '*/.git*' -delete 2>/dev/null
+  fi
+  echo "Your home folder:"
+  for l in .agents/AGENTS.md .claude/CLAUDE.md .codex/AGENTS.md AGENTS.md .local/bin/dotscurb .config/mise/conf.d/dotscurb.toml; do
+    [ -L "$HOME/$l" ] || continue
+    case $(readlink "$HOME/$l") in *dotscurb*|*/.agents/AGENTS.md) rm "$HOME/$l" && echo "  - ~/$l" ;; esac
+  done
+  [ -f "$HOME/.config/mise/conf.d/dotscurb-extras.toml" ] && rm "$HOME/.config/mise/conf.d/dotscurb-extras.toml" && echo "  - ~/.config/mise/conf.d/dotscurb-extras.toml"
+  for f in .zshrc .bashrc .zshenv .zprofile .profile; do strip_marked "$HOME/$f"; done
+  unset_git "$HOME/.gitconfig"
+  if [ -f "$HOME/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
+    jsonedit "$HOME/.claude/settings.json" '.hooks.SessionStart |= ((. // []) | map(select(any(.hooks[]?; (.command // "") | test("dotscurb")) | not)))
+      | if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end'
+  fi
+  rm -rf "$STATE"
+  echo "Left as they are: deny rules and attribution settings in Claude Code / Cursor (remove by hand if you want)."
+  echo "Last step: rm -rf ~/.local/share/dotscurb   — then review and commit your dotfiles repo (chezmoi cd; git status)."
+  echo "Start again: curl -fsSL https://raw.githubusercontent.com/safa0/dotscurb/main/install.sh | sh"
+}
+
 # --- setup / doctor --------------------------------------------------------------------------------------
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/dotscurb"
 AGENTS_CLI="claude codex cursor-agent pi opencode"
@@ -387,15 +460,17 @@ cmd_setup() {
   fi
   mise install --yes >/dev/null 2>&1 || warn "mise install failed; run 'mise install' to see why"
   ensure_agents_files
+  merge_claude_skills
   if command -v dotagents >/dev/null 2>&1; then
-    (cd "$HOME" && { dotagents --global doctor >/dev/null 2>&1 || dotagents --global install >/dev/null 2>&1; dotagents --global sync >/dev/null 2>&1; }) \
-      || warn "dotagents failed; run 'dotagents --global doctor'"
+    log=$(cd "$HOME" && { dotagents --global doctor >/dev/null 2>&1 || dotagents --global install 2>&1; } && dotagents --global sync 2>&1) \
+      || { warn "dotagents failed:"; printf '%s\n' "$log" | tail -5 | sed 's/^/    /' >&2; }
   else warn "dotagents not available (needs Node 20+; answer yes to node when chezmoi asks, or install it)"; fi
   sync_back
   # herdr: its agent-state hooks for every installed agent it supports (claude, codex, pi, opencode)
   if command -v herdr >/dev/null 2>&1; then
     st=$(herdr integration status 2>/dev/null)
     for a in claude codex pi opencode; do command -v "$a" >/dev/null 2>&1 || continue
+      [ "$a" = pi ] && [ ! -d "$HOME/.pi" ] && continue   # pi creates ~/.pi on first start; doctor says so
       printf '%s\n' "$st" | grep -q "^$a: not installed" || continue
       herdr integration install "$a" >/dev/null 2>&1 && say "herdr: installed the $a integration" || warn "herdr: could not install the $a integration"
     done
@@ -477,7 +552,8 @@ case $cmd in
   apply) cmd_apply ;;
   check) cmd_check "$@" ;;
   init) cmd_init "$@" ;;
+  uninstall) cmd_uninstall "$@" ;;
   setup) cmd_setup ;;
   doctor) cmd_doctor ;;
-  *) sed -n '2,12p' "$self" | sed 's/^# \{0,1\}//' ;;
+  *) sed -n '2,14p' "$self" | sed 's/^# \{0,1\}//' ;;
 esac
