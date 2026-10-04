@@ -12,6 +12,7 @@ dotscurb    the gaps:
   hooks/                 commit format, attribution, push check, worktree setup, hand-over to each repo's own hooks
   dotscurb apply         one policy → Claude Code and Cursor CLI formats; switches on in Claude the plugins dotagents
                          declares (dotagents only generates the marketplace, issue #176)
+  dotscurb init          first run (via install.sh): wires dotscurb into your own dotfiles repo, asks the questions
   dotscurb setup         what chezmoi runs after each apply: mise install, dotagents install/sync, herdr hooks,
                          dotscurb apply; on the first run it also prints dotscurb doctor
   dotscurb doctor        checklist with the fix for each item: tools, git, agent logins, herdr, items installed
@@ -23,34 +24,36 @@ dotscurb    the gaps:
 
 ## Set up a new machine
 
-Prerequisites: `git`, `zsh` or `bash`, `curl`, GitHub access to this repo (`gh auth login`). Node 20+ is needed for
-dotagents; answer yes to Node when asked and mise installs it.
+dotscurb holds only the shared parts. Your own settings live in **your own dotfiles repo** (chezmoi), which fetches
+dotscurb next to it. Every user has their own repo; nobody points at someone else's.
+
+Prerequisites: `git`, `curl`, `zsh` or `bash`, GitHub access to this repo (`gh auth login`).
 
 ```sh
-sh -c "$(curl -fsLS get.chezmoi.io)" -- -b ~/.local/bin
-~/.local/bin/chezmoi init --apply https://github.com/safa0/dotscurb.git
-exec zsh
+curl -fsSL https://raw.githubusercontent.com/safa0/dotscurb/main/install.sh | sh
 ```
 
-chezmoi asks once:
-- name, email, GitHub username and numeric id (the agent co-author line);
-- the folder that holds your git repos (`dotscurb.projects` in `~/.gitconfig`; `dotscurb doctor` checks the repos in it);
-- which optional tools mise should install: Node, Claude Code, Codex, Cursor CLI, pi, herdr, worktrunk, direnv,
-  tmux, uv, gitleaks.
-  The default is yes only for tools not already on the machine. Your answers go to `~/.config/mise/conf.d/dotscurb-extras.toml`.
+The installer clones dotscurb to `~/.local/share/dotscurb` and runs `dotscurb init`, which:
+1. installs chezmoi if missing;
+2. asks for your dotfiles repo: give its URL (or GitHub user), or leave it empty to start a new one;
+3. asks a few questions once: name, email, GitHub user and id (for the agent co-author line), the folders that hold
+   your repos (comma-separated), and which optional tools mise should install (Node, Claude Code, Codex, Cursor CLI,
+   pi, herdr, worktrunk, direnv, tmux, uv, gitleaks; default yes only for tools you don't have). Answers go into
+   YOUR repo: `.chezmoidata/dotscurb.toml` and `dot_config/mise/conf.d/dotscurb-extras.toml`;
+4. wires dotscurb into your repo: `.chezmoiexternal.toml` entry that fetches dotscurb, a run script
+   (`dotscurb setup`), links, and small `modify_` scripts that only add dotscurb's lines to `.gitconfig` and shell
+   files. Files your repo already manages are patched in place (plain files) or left to you with a note (templates);
+   your `~/.agents/agents.toml` and `policy.yaml` are added if they exist;
+5. shows the changes, applies them (`dotscurb setup` → tools, skills/MCP/plugins, policy) and prints the
+   `dotscurb doctor` checklist (agent logins etc.);
+6. new repo: commits it and offers to create a private GitHub repo `dotfiles` and push. Existing repo: you review and commit.
 
-It only adds to your existing files: in `~/.gitconfig` the hooks path, co-author line, project folder and a missing
-name/email; one PATH line in the shell profiles; three guarded lines in `~/.zshrc`/`~/.bashrc` (direnv hook, `wt`
-shell integration, Cursor CLI file credentials). Then `dotscurb setup` runs and prints the doctor checklist: agent
-logins, herdr hooks, anything to move into dotagents. Do what it lists, then `dotscurb doctor` again.
-Change answers later with `chezmoi init --prompt`; update with `chezmoi update`.
-
-Already using chezmoi for your own dotfiles? Copy `template/` into your repo and point it at a dotscurb checkout
-(e.g. with `.chezmoiexternal.toml`) instead.
+Another machine: run the same installer and give it your dotfiles repo. Change answers: `dotscurb init --reconfigure`.
+Update: `chezmoi update`.
 
 ## How a machine uses it
 
-chezmoi does the placing (`template/`, or the same files in your own dotfiles repo):
+chezmoi does the placing, from your dotfiles repo (`dotscurb init` copies the files from `template/`):
 
 | chezmoi places | from dotscurb |
 |---|---|
@@ -58,12 +61,10 @@ chezmoi does the placing (`template/`, or the same files in your own dotfiles re
 | `~/.agents/AGENTS.md` → link; `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/AGENTS.md` → links to it | `defaults/AGENTS.md` |
 | `~/.config/mise/conf.d/dotscurb.toml` → link | `defaults/mise.toml` |
 | `~/.local/bin/dotscurb` → link | `bin/dotscurb` |
-| `~/.agents/agents.toml`, `~/.agents/policy.yaml` (created once, then yours) | `defaults/agents.toml`, empty policy |
+| `~/.agents/agents.toml`, `~/.agents/policy.yaml` (in your repo) | starter: `defaults/agents.toml`, empty policy |
 | `~/.config/mise/conf.d/dotscurb-extras.toml` (your optional tools) | |
 | `~/.config/worktrunk/config.toml` (created once) | |
 | a run script: `dotscurb setup` | |
-
-Prerequisites: `git`, `curl`, Node 20+ (for dotagents), GitHub access to this repo.
 
 ## Change things
 

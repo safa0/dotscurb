@@ -2,9 +2,9 @@
 
 Next, roughly in order. Each item keeps the rule: dotscurb only fills gaps the other tools leave.
 
-- **Several project folders.** `dotscurb.projects` is already multi-valued in git config
-  (`git config --global --add dotscurb.projects ~/work`) and `dotscurb doctor` checks every folder, but chezmoi only
-  asks for one. Ask for a list at init; let repos outside any folder be added one by one.
+- **Project folders, beyond the list.** `dotscurb init` asks for a comma-separated list and `doctor` checks every
+  folder. Still to do: single repos outside any folder (`dotscurb.repo` entries), and using the list for more than
+  doctor (e.g. `check --fix` across all repos).
 - **Repos with their own `core.hooksPath` (husky, lefthook).** Today dotscurb's hooks don't run there; `doctor` flags
   them. Hand over to the repo's hooks folder instead of `.git/hooks`, then use dotscurb's path everywhere.
 - **Secrets** behind one `with-secrets` wrapper (backend: pass, 1Password `op run`, or Infisical), referenced from MCP
