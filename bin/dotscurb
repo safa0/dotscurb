@@ -426,7 +426,7 @@ cmd_doctor() {
     printf '%s\n' "$dirs" | while IFS= read -r d; do [ -d "$d" ] && ok "project folder ${d#$HOME/}" || printf '  ✗ project folder %s does not exist\n' "$d"; done
     for r in $(project_repos); do
       hp=$(git -C "$r" config --local core.hooksPath 2>/dev/null)
-      [ -n "$hp" ] && no "${r#$HOME/}: own core.hooksPath ($hp) skips dotscurb's hooks" "if the repo doesn't need it: git -C $r config --unset core.hooksPath (husky etc. need it; see ROADMAP.md)"
+      [ -n "$hp" ] && no "${r#$HOME/}: own core.hooksPath ($hp) skips dotscurb's hooks" "if the repo doesn't need it: git -C $r config --unset core.hooksPath (husky etc. need it; see the README roadmap)"
       out=$(cd "$r" && cmd_check --session --project-only 2>&1)
       [ -n "$out" ] && no "${r#$HOME/}: project MCP/plugins outside dotagents" "cd $r && dotscurb check --fix"
     done

@@ -84,5 +84,26 @@ v1: the hooks, policy rendering for Claude and Cursor, Claude plugin switch-on, 
 servers (all five agents) and Claude plugins: user-level ones move to dotagents, project-level ones are recorded in the
 repo's `agents.toml` and switched on in Claude per project. Tested on macOS and a fresh Ubuntu container.
 
-See ROADMAP.md for what's next. Not in v1: secrets store, Codex and OpenCode policy, plugin switch-on in Cursor and Codex,
-session notices outside Claude, upstream pull requests to dotagents.
+Everything else is on the roadmap below.
+
+## Roadmap
+
+Same rule as v1: only add what the other tools don't already do, and drop pieces once a tool covers them.
+
+1. **Secrets store.** MCP servers get keys only as `${VAR}` references today; servers whose native config holds a
+   literal key are skipped by `check --fix`. Pick a store that works over SSH and on Linux (Infisical, 1Password CLI
+   or `pass`) and pass keys only to the MCP process, never into the shell or `agents.toml`.
+2. **Plugin switch-on in Cursor and Codex.** dotagents writes their plugin marketplaces (`.cursor-plugin/`,
+   `.agents/plugins/marketplace.json`) but doesn't register or enable them (dotagents issues #176, #178).
+   `dotscurb apply` does this for Claude only.
+3. **Policy for Codex and OpenCode.** Render `policy.yaml` into Codex (approval and sandbox settings) and OpenCode
+   (`permission` in `opencode.json`). pi has no permission system.
+4. **Session notices outside Claude.** Run `dotscurb check --session` at session start in Cursor, Codex and pi, as
+   Claude does today.
+5. **Upstream to dotagents.** Send pull requests for the gaps dotscurb fills (importing native installs, plugin
+   activation, distinct project marketplace names), then remove those parts from dotscurb when they ship.
+6. **Project folders, beyond the list.** `dotscurb init` asks for several folders and `doctor` checks every repo in
+   them. Still to do: single repos outside any folder, and `check --fix` across all of them.
+7. **Repos with their own `core.hooksPath` (husky, lefthook).** dotscurb's hooks don't run there; `doctor` flags them.
+   Hand over to the repo's hooks folder instead of `.git/hooks`.
+8. **Real Linux server run** (herdr, agent logins, `chsh` to zsh).
