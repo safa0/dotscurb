@@ -262,8 +262,12 @@ cmd_init() {
     command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && { gh_login=$(gh api user --jq .login 2>/dev/null); gh_id=$(gh api user --jq .id 2>/dev/null); }
     pdef=$(git config --global --get-all dotscurb.projects 2>/dev/null | paste -sd, - | sed 's/,/, /g')
     [ -n "$pdef" ] || for d in "$HOME/code" "$HOME/Documents/repos" "$HOME/src" "$HOME/projects" "$HOME/dev"; do [ -d "$d" ] && pdef="$pdef${pdef:+, }~${d#$HOME}"; done
+    gh_email=$(git config --global user.email)
+    [ -z "$gh_email" ] && [ -n "$gh_id" ] && gh_email="$gh_id+$gh_login@users.noreply.github.com"
     name=$(ask "Your full name (git commits)" "$(git config --global user.name)")
-    email=$(ask "Your email (git commits)" "$(git config --global user.email)")
+    while [ -z "$name" ] && ( : < /dev/tty ) 2>/dev/null; do name=$(ask "  Name is required for git commits" ""); done
+    email=$(ask "Your email (git commits)" "$gh_email")
+    while [ -z "$email" ] && ( : < /dev/tty ) 2>/dev/null; do email=$(ask "  Email is required for git commits" ""); done
     github=$(ask "Your GitHub username (agent co-author line)" "$gh_login")
     gid=$(ask "Your GitHub numeric id (gh api user --jq .id)" "$gh_id")
     projects=$(ask "Folders that hold your git repos, comma-separated" "${pdef:-~/code}")
@@ -329,10 +333,12 @@ cmd_init() {
   yes_no "Apply to your home folder now?" y || { echo "Not applied. Later: chezmoi apply"; return 0; }
   chezmoi apply || warn "chezmoi apply reported errors"
   if [ "$created" = 1 ]; then
+    committed=0
     if [ -n "$(git config --global user.name)" ] && [ -n "$(git config --global user.email)" ]; then
-      git -C "$top" add -A && git -C "$top" commit -qm "feat(dotfiles): start dotfiles with dotscurb" && echo "Committed in $top"
-    else echo "Not committed: git has no name/email yet. Set them (dotscurb init --reconfigure), then: chezmoi cd; git add -A; git commit"; fi
-    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && yes_no "Create a PRIVATE GitHub repo 'dotfiles' for it and push?" y; then
+      git -C "$top" add -A && git -C "$top" commit -qm "feat(dotfiles): start dotfiles with dotscurb" && { committed=1; echo "Committed in $top"; }
+    else echo "Not committed: git has no name/email yet. Run: dotscurb init --reconfigure"; fi
+    if [ "$committed" = 0 ]; then :
+    elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && yes_no "Create a PRIVATE GitHub repo 'dotfiles' for it and push?" y; then
       (cd "$top" && gh repo create dotfiles --private --source . --push) && echo "Other machines: dotscurb's install.sh, then give it this repo."
     else echo "Your dotfiles repo is local only. Add a remote later: chezmoi cd; gh repo create dotfiles --private --source . --push"; fi
   else
@@ -411,7 +417,10 @@ cmd_doctor() {
     echo "herdr"
     st=$(herdr integration status 2>/dev/null)
     for a in claude codex pi opencode; do command -v "$a" >/dev/null 2>&1 || continue
-      printf '%s\n' "$st" | grep -q "^$a: not installed" && no "herdr integration for $a missing" "herdr integration install $a" || ok "herdr integration for $a"; done
+      if printf '%s\n' "$st" | grep -q "^$a: not installed"; then
+        fix="herdr integration install $a"; [ "$a" = pi ] && [ ! -d "$HOME/.pi" ] && fix="start pi once (it creates ~/.pi), then: $fix"
+        no "herdr integration for $a missing" "$fix"
+      else ok "herdr integration for $a"; fi; done
   fi
   echo "Skills, MCP servers, plugins"
   if command -v dotagents >/dev/null 2>&1; then
