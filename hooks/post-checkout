@@ -1,0 +1,54 @@
+#!/bin/sh
+# dotscurb: hands over to the repo's own post-checkout, then sets up NEW worktrees (git worktree add,
+# by any agent, wt, herdr or by hand): copies gitignored env files, .worktreeinclude paths, repo skills,
+# submodules, and the opt-in repo setup script. Ordinary checkouts and clones only get the hand-over.
+. "$(dirname "$0")/_chain.sh"
+dotscurb_chain post-checkout "$@" || exit $?
+zero=0000000000000000000000000000000000000000
+[ "$1" = "$zero" ] || exit 0
+gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 0
+case "$gitdir" in */worktrees/*) ;; *) exit 0 ;; esac
+[ -e "$gitdir/setup.done" ] && exit 0
+WT=$(git rev-parse --show-toplevel)
+MAIN=$(cd "$(git rev-parse --git-common-dir)/.." && pwd -P)   # portable: no --path-format (git >= 2.31 only)
+[ "$WT" = "$MAIN" ] && exit 0
+
+copy_ignored() {  # $1 = path relative to the main checkout; only gitignored files, never overwrite
+  f="$1"
+  [ -f "$MAIN/$f" ] && [ ! -e "$WT/$f" ] || return 0
+  git -C "$MAIN" check-ignore -q -- "$f" || return 0
+  mkdir -p "$(dirname "$WT/$f")" && cp -p "$MAIN/$f" "$WT/$f" && echo "worktree setup: copied $f" >&2
+}
+
+# 1. default env files (depth <= 3, skipping node_modules)
+(cd "$MAIN" && find . -maxdepth 3 \( -name node_modules -o -name .git \) -prune -o -type f \
+  \( -name '.env' -o -name '.env.*' -o -name '.envrc' \) -print) | while IFS= read -r f; do copy_ignored "${f#./}"; done
+
+# 2. repo-specific list: one path or glob per line, relative to the repo root
+if [ -f "$MAIN/.worktreeinclude" ]; then
+  while IFS= read -r pat; do
+    case "$pat" in ''|'#'*|/*|*..*) continue ;; esac
+    (cd "$MAIN" && for f in $pat; do [ -f "$f" ] && echo "$f"; done) | while IFS= read -r f; do copy_ignored "$f"; done
+  done < "$MAIN/.worktreeinclude"
+fi
+
+# 3. repo-local skills that are gitignored in the main checkout
+for d in .agents/skills .claude/skills; do
+  if [ -e "$MAIN/$d" ] && [ ! -e "$WT/$d" ] && git -C "$MAIN" check-ignore -q -- "$d" 2>/dev/null; then
+    mkdir -p "$(dirname "$WT/$d")" && ln -s "$MAIN/$d" "$WT/$d" && echo "worktree setup: linked $d" >&2
+  fi
+done
+
+# 3b. submodules: a new worktree starts with empty submodule folders
+if [ -f "$WT/.gitmodules" ]; then
+  GIT_TERMINAL_PROMPT=0 git -C "$WT" submodule update --init --recursive >/dev/null 2>&1 \
+    && echo "worktree setup: initialised submodules" >&2 \
+    || echo "worktree setup: submodule update failed (run: git submodule update --init --recursive)" >&2
+fi
+
+# 4. repo setup script (dependencies etc.): opt-in per repo with `git config --local worktree.runSetup true`
+if [ "$(git -C "$MAIN" config --local --get --type=bool worktree.runSetup 2>/dev/null)" = true ] && [ -x "$WT/scripts/setup-worktree.sh" ]; then
+  (cd "$WT" && ./scripts/setup-worktree.sh) || echo "worktree setup: scripts/setup-worktree.sh failed" >&2
+fi
+: > "$gitdir/setup.done"
+exit 0

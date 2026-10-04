@@ -1,0 +1,9 @@
+# dotscurb CLI tools for humans and agents (macOS + Linux, no sudo).
+# Linked to ~/.config/mise/conf.d/dotscurb.toml by `dotscurb install`; pinned so every machine matches.
+[tools]
+ripgrep = "15.2.0"
+fd = "10.5.0"
+ast-grep = "0.45.3"
+jq = "1.8.2"
+yq = "4.54.1"
+gh = "2.102.0"   # git credential helper; needed on Linux where there is no brew

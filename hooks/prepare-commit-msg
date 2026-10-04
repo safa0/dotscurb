@@ -1,0 +1,15 @@
+#!/bin/sh
+# dotscurb: runs for every agent and for you; --no-verify does NOT skip it.
+# 1. repo's own hook first  2. strip agent attribution  3. add your co-author line on agent commits
+# 4. enforce Conventional Commits subjects for -m messages.
+. "$(dirname "$0")/_chain.sh"
+dotscurb_chain prepare-commit-msg "$@" || exit $?
+msg="$1"; src="$2"
+grep -viE '^(Co-Authored-By: (Claude|Codex|Cursor)|Made-with: Cursor|Claude-Session:)|Generated with \[Claude Code\]' "$msg" >"$msg.tmp" && mv "$msg.tmp" "$msg"
+coauthor=$(git config --get dotscurb.coauthor)   # set by `dotscurb install`, e.g. "safa0's Agent <id+safa0@users.noreply.github.com>"
+if [ -n "$coauthor" ] && [ -n "$CLAUDECODE$CODEX_THREAD_ID$CURSOR_AGENT$PI_SESSION_ID$GEMINI_CLI" ]; then
+  git interpret-trailers --in-place --if-exists addIfDifferent --trailer "Co-authored-by: $coauthor" "$msg"
+fi
+[ "$src" = message ] || exit 0
+head -1 "$msg" | grep -Eq '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?!?: .{1,72}$' \
+  || { echo "commit rejected: subject must be '<type>(<scope>): <summary>' (Conventional Commits, summary <= 72 chars)" >&2; exit 1; }

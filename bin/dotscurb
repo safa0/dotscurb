@@ -1,0 +1,173 @@
+#!/bin/sh
+# dotscurb: the glue between chezmoi, mise, dotagents, git and the coding agents (Claude, Cursor, Codex, pi, OpenCode).
+#   dotscurb install   set up this machine: tools (mise), git hooks, ~/.agents files and links; then apply
+#   dotscurb apply     render the policy and shared rules into the agents (only the keys dotscurb owns)
+#   dotscurb check     list MCP servers and plugins installed outside dotagents (read-only)
+#   dotscurb da …      run dotagents at the pinned version
+set -u
+DOTAGENTS_VERSION=3.3.0
+
+self=$0
+while [ -L "$self" ]; do t=$(readlink "$self"); case $t in /*) self=$t ;; *) self=$(dirname "$self")/$t ;; esac; done
+ROOT=$(cd "$(dirname "$self")/.." && pwd -P)
+A="$HOME/.agents"
+PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"; export PATH
+QUIET=0
+
+say() { [ "$QUIET" = 1 ] || printf '%s\n' "$*"; }
+warn() { printf 'dotscurb: %s\n' "$*" >&2; }
+need() { command -v "$1" >/dev/null 2>&1 || { warn "$1 not found; run: dotscurb install"; exit 1; }; }
+
+# link <target> <path>: create or confirm a symlink; never replaces a real file
+link() {
+  if [ -L "$2" ]; then
+    [ "$(readlink "$2")" = "$1" ] && return 0
+    ln -sfn "$1" "$2" && say "relinked ${2#$HOME/}"
+  elif [ -e "$2" ]; then
+    warn "~/${2#$HOME/} exists and is not a link; left alone"
+  else
+    mkdir -p "$(dirname "$2")" && ln -s "$1" "$2" && say "linked ~/${2#$HOME/}"
+  fi
+}
+
+# put <file> <tmpfile>: replace contents only when they differ (keeps owner, group and mode)
+put() {
+  if [ -f "$1" ] && cmp -s "$2" "$1"; then rm -f "$2"; return 1; fi
+  mkdir -p "$(dirname "$1")" && cat "$2" > "$1" && rm -f "$2" && say "updated ~/${1#$HOME/}"
+}
+
+# jsonedit <file> <jq-program> [jq args…]: apply only if the result differs semantically (no reformat churn)
+jsonedit() {
+  f=$1; prog=$2; shift 2
+  [ -f "$f" ] || return 0
+  new=$(mktemp) || return 1
+  jq "$@" "$prog" "$f" > "$new" || { rm -f "$new"; warn "could not update $f"; return 1; }
+  if [ "$(jq -S . "$f")" = "$(jq -S . "$new")" ]; then rm -f "$new"; return 0; fi
+  put "$f" "$new"
+}
+
+policy_json() {
+  def=$(yq -o=json '. // {}' "$ROOT/defaults/policy.yaml")
+  per='{}'; [ -f "$A/policy.yaml" ] && per=$(yq -o=json '. // {}' "$A/policy.yaml")
+  jq -n --argjson a "$def" --argjson b "$per" '
+    def u: reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end);
+    { denyRead: (($a.denyRead // []) + ($b.denyRead // []) | u),
+      denyWrite: (($a.denyWrite // []) + ($b.denyWrite // []) | u),
+      denyCommands: (($a.denyCommands // []) + ($b.denyCommands // []) | u) }'
+}
+
+cmd_install() {
+  # 1. CLI tools via mise (no sudo)
+  if ! command -v mise >/dev/null 2>&1; then
+    if command -v brew >/dev/null 2>&1; then brew install mise; else curl -fsSL https://mise.run | sh; fi
+  fi
+  link "$ROOT/defaults/mise.toml" "$HOME/.config/mise/conf.d/dotscurb.toml"
+  if [ "$QUIET" = 1 ]; then mise install --yes >/dev/null 2>&1; else mise install --yes; fi || warn "mise install failed"
+  # 2. git: global hooks + co-author line for agent commits
+  cur=$(git config --global --get core.hooksPath || true)
+  case $cur in "~/"*) cur="$HOME/${cur#"~/"}" ;; esac
+  [ "$cur" = "$ROOT/hooks" ] || { git config --global core.hooksPath "$ROOT/hooks"; say "git hooks: $ROOT/hooks"; }
+  if [ -z "$(git config --global --get dotscurb.coauthor || true)" ] && gh auth status >/dev/null 2>&1; then
+    login=$(gh api user --jq .login) && id=$(gh api user --jq .id) && \
+      git config --global dotscurb.coauthor "$login's Agent <$id+$login@users.noreply.github.com>" && say "co-author: $login's Agent"
+  fi
+  # 3. ~/.agents: your files are created once and never overwritten
+  mkdir -p "$A/skills"
+  [ -f "$A/agents.toml" ] || { cp "$ROOT/defaults/agents.toml" "$A/agents.toml"; say "created ~/.agents/agents.toml"; }
+  [ -f "$A/policy.yaml" ] || { printf '# Your additions to the dotscurb policy (same keys as %s/defaults/policy.yaml).\ndenyRead: []\ndenyWrite: []\ndenyCommands: []\n' "$ROOT" > "$A/policy.yaml"; say "created ~/.agents/policy.yaml"; }
+  # 4. links: shared rules and skills for every agent, and the command itself
+  link "$A/AGENTS.md" "$HOME/.claude/CLAUDE.md"
+  link "$A/AGENTS.md" "$HOME/.codex/AGENTS.md"
+  link "$A/AGENTS.md" "$HOME/AGENTS.md"
+  link "$A/skills" "$HOME/.claude/skills"
+  link "$ROOT/bin/dotscurb" "$HOME/.local/bin/dotscurb"
+  shell=$(basename "${SHELL:-sh}")
+  env -i HOME="$HOME" PATH=/usr/bin:/bin "$shell" -lc "command -v rg && command -v dotscurb" >/dev/null 2>&1 || \
+    warn "rg or dotscurb not on PATH in new shells; add to ~/.zshenv (or ~/.profile): export PATH=\"\$HOME/.local/bin:\$HOME/.local/share/mise/shims:\$PATH\""
+  DA_MODE=install cmd_apply
+}
+
+cmd_apply() {
+  need jq; need yq
+  # 1. shared rules + your personal rules
+  t=$(mktemp); cat "$ROOT/defaults/AGENTS.md" > "$t"
+  [ -f "$A/AGENTS.personal.md" ] && { printf '\n' >> "$t"; cat "$A/AGENTS.personal.md" >> "$t"; }
+  put "$A/AGENTS.md" "$t" || true
+  # 2. policy → Claude Code (deny rules, attribution off, session-start check)
+  pol=$(policy_json)
+  [ -f "$HOME/.claude/settings.json" ] || { mkdir -p "$HOME/.claude" && echo "{}" > "$HOME/.claude/settings.json"; }
+  jsonedit "$HOME/.claude/settings.json" '
+    .permissions.deny = [($p.denyRead[] | "Read(\(.))"), ($p.denyWrite[] | "Edit(\(.))"),
+      ($p.denyCommands[] | if (.args // "") != "" then "Bash(\(.cmd) \(.args)*)" else "Bash(\(.cmd) *)" end)]
+    | .attribution.commit = "" | .attribution.pr = ""
+    | .hooks.SessionStart = ((.hooks.SessionStart // [])
+        | if any(.[]; any(.hooks[]?; (.command // "") | test("dotscurb check"))) then .
+          else . + [{"hooks": [{"type": "command", "command": $hook}]}] end)' \
+    --argjson p "$pol" --arg hook "$HOME/.local/bin/dotscurb check --session"
+  # 3. policy → Cursor CLI (absolute paths; Shell(cmd:args*) format)
+  jsonedit "$HOME/.cursor/cli-config.json" '
+    def abs: sub("^~/"; $home + "/");
+    .permissions.deny = [($p.denyRead[] | "Read(\(abs))"), ($p.denyWrite[] | "Write(\(abs))"),
+      ($p.denyCommands[] | if (.args // "") != "" then "Shell(\(.cmd):\(.args)*)" else "Shell(\(.cmd))" end)]
+    | .attribution.attributeCommitsToAgent = false | .attribution.attributePRsToAgent = false' \
+    --argjson p "$pol" --arg home "$HOME"
+  # 4. dotagents renders skills + MCP for every agent
+  if [ -f "$A/agents.toml" ] && command -v npx >/dev/null 2>&1; then
+    (cd "$HOME" && npx -y "@sentry/dotagents@$DOTAGENTS_VERSION" --global "${DA_MODE:-sync}" 2>&1 | grep -v -e 'npm notice' -e 'Everything in sync' -e 'Repaired' | sed 's/^/dotagents: /' >&2) || true
+  fi
+}
+
+# check: print native MCP servers / plugins that no agents.toml declares
+JQ_MCP='to_entries[] | [.key, $where,
+  (if ([(.value.env // {}), (.value.headers // {}), (.value.http_headers // {})] | add | to_entries
+        | map(.value | tostring | select(test("\\$\\{|\\{env:") | not)) | length) > 0
+   then "literal secret in config" else "" end)] | @tsv'
+mcp_from() { # <file> <jq-path> <label> [toml]
+  [ -f "$1" ] || return 0
+  if [ "${4:-}" = toml ]; then yq -p toml -o json "$2 // {}" "$1" 2>/dev/null; else jq "$2 // {}" "$1" 2>/dev/null; fi \
+    | jq -r --arg where "$3" "$JQ_MCP" 2>/dev/null
+}
+cmd_check() {
+  need jq; need yq
+  session=0; [ "${1:-}" = --session ] && session=1
+  repo=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  declared=$( { for t in "$A/agents.toml" ${repo:+"$repo/agents.toml"}; do
+      [ -f "$t" ] && yq -p toml -o json '[(.mcp // [])[].name, (.plugins // [])[].name]' "$t" | jq -r '.[]'; done; } | sort -u)
+  found=$( {
+    mcp_from "$HOME/.claude.json" '.mcpServers' 'Claude, every project'
+    [ -n "$repo" ] && mcp_from "$HOME/.claude.json" ".projects[\"$repo\"].mcpServers" 'Claude, this project'
+    [ -n "$repo" ] && mcp_from "$repo/.mcp.json" '.mcpServers' 'Claude, .mcp.json'
+    mcp_from "$HOME/.cursor/mcp.json" '.mcpServers' 'Cursor, every project'
+    [ -n "$repo" ] && mcp_from "$repo/.cursor/mcp.json" '.mcpServers' 'Cursor, this project'
+    mcp_from "$HOME/.codex/config.toml" '.mcp_servers' 'Codex, every project' toml
+    [ -n "$repo" ] && mcp_from "$repo/.codex/config.toml" '.mcp_servers' 'Codex, this project' toml
+    mcp_from "$HOME/.pi/agent/mcp.json" '.mcpServers' 'pi, every project'
+    [ -n "$repo" ] && mcp_from "$repo/.pi/mcp.json" '.mcpServers' 'pi, this project'
+    mcp_from "$HOME/.config/opencode/opencode.json" '.mcp' 'OpenCode, every project'
+    f="$HOME/.claude/plugins/installed_plugins.json"
+    [ -f "$f" ] && jq -r --arg repo "$repo" '.plugins // {} | to_entries[] | select(.key | endswith("@synced") | not)
+      | .key as $k | .value[] | select(.scope == "user" or .projectPath == $repo)
+      | [($k | split("@")[0]), "Claude plugin, \(if .scope == "user" then "every project" else "this project" end)", ""] | @tsv' "$f"
+    true
+  } | sort -u)
+  out=$(printf '%s\n' "$found" | while IFS="$(printf '\t')" read -r name where note; do
+    [ -n "$name" ] || continue
+    printf '%s\n' "$declared" | grep -qx -- "$name" && continue
+    printf '  - %s  (%s)%s\n' "$name" "$where" "${note:+  ⚠ $note}"
+  done)
+  if [ -z "$out" ]; then [ "$session" = 1 ] || echo "dotscurb: everything is managed by dotagents"; return 0; fi
+  echo "dotscurb: installed outside dotagents, so other agents and machines don't get them:"
+  printf '%s\n' "$out"
+  echo "Move each one: dotscurb da [--project] mcp add <name> --url <url> | --command \"<cmd>\" [--env NAME]"
+  echo "(plugins: dotscurb da [--project] add <source>), then remove the native entry. Never copy secret values."
+}
+
+cmd=${1:-help}; [ $# -gt 0 ] && shift
+for a in "$@"; do [ "$a" = --quiet ] && QUIET=1; done
+case $cmd in
+  install) cmd_install ;;
+  apply) cmd_apply ;;
+  check) cmd_check "$@" ;;
+  da) need npx; exec npx -y "@sentry/dotagents@$DOTAGENTS_VERSION" "$@" ;;
+  *) sed -n '2,6p' "$self" | sed 's/^# \{0,1\}//' ;;
+esac

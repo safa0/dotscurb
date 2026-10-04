@@ -1,0 +1,13 @@
+# dotagents (getsentry/dotagents) global config, created once by dotscurb; yours to edit.
+# Run dotagents through `dotscurb da …` (pinned version). Things listed here are on in EVERY project;
+# switch things on for one project with `dotscurb da --project add …` in that repo instead.
+version = 1
+agents = ["claude", "cursor", "codex", "pi", "opencode"]
+
+[[skills]]
+name = "dotagents"
+source = "getsentry/dotagents"
+
+[[mcp]]
+name = "context7"
+url = "https://mcp.context7.com/mcp"

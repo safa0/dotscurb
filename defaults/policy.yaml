@@ -1,0 +1,34 @@
+# dotscurb default agent policy: what coding agents may NOT do.
+# Personal additions go in ~/.agents/policy.yaml (same keys); both lists are combined.
+# Rendered by `dotscurb apply` into Claude Code (~/.claude/settings.json) and Cursor CLI (~/.cursor/cli-config.json).
+# pi has no permission system; Codex and OpenCode are not rendered yet.
+denyRead:            # files agents may not read
+  - "~/.ssh/**"
+  - "~/.aws/**"
+  - "~/.gnupg/**"
+  - "~/.config/gh/**"
+  - "~/.config/gcloud/**"
+  - "~/.docker/config.json"
+  - "~/.netrc"
+  - "~/.npmrc"
+  - "~/.claude/.credentials.json"
+  - "~/Library/Keychains/**"
+  - "**/.env"
+  - "**/.env.*"
+  - "**/*.pem"
+  - "**/*.key"
+denyWrite:           # files agents may not edit
+  - "~/.ssh/**"
+  - "~/.aws/**"
+denyCommands:        # cmd + optional argument prefix; empty args = the whole command
+  - { cmd: "security", args: "find-generic-password" }
+  - { cmd: "security", args: "dump-keychain" }
+  - { cmd: "rm", args: "-rf" }
+  - { cmd: "sudo", args: "" }
+  - { cmd: "git", args: "push --force" }
+  - { cmd: "git", args: "push -f" }
+  # installs must go through dotagents (`dotscurb da …`), not an agent's own installer
+  - { cmd: "claude", args: "mcp add" }
+  - { cmd: "claude", args: "plugin install" }
+  - { cmd: "npx", args: "skills add" }
+  - { cmd: "codex", args: "mcp add" }

@@ -1,0 +1,4 @@
+#!/bin/sh
+# dotscurb: no logic of its own for this hook; hand over to the repo's own hook (e.g. dotagents' post-merge).
+. "$(dirname "$0")/_chain.sh"
+dotscurb_chain "$(basename "$0")" "$@"
