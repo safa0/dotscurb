@@ -15,7 +15,10 @@
       (list "pi" "pi" "pi coding agent")
       (list "herdr" "herdr" "herdr (terminal multiplexer for agents)")
       (list "worktrunk" "wt" "worktrunk (wt: git worktree helper)")
-      (list "direnv" "direnv" "direnv (per-folder env, no secrets)") -}}
+      (list "direnv" "direnv" "direnv (per-folder env, no secrets)")
+      (list "tmux" "tmux" "tmux (terminal multiplexer)")
+      (list "uv" "uv" "uv (Python tools and MCP servers)")
+      (list "gitleaks" "gitleaks" "gitleaks (secret scanner for commits)") -}}
 {{-   $key := index $t 0 -}}
 {{-   $has := lookPath (index $t 1) -}}
 {{-   $q := printf "Install %s with mise?%s" (index $t 2) (ternary " (already installed here)" "" (ne $has "")) -}}

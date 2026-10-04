@@ -35,7 +35,8 @@ exec zsh
 chezmoi asks once:
 - name, email, GitHub username and numeric id (the agent co-author line);
 - the folder that holds your git repos (`dotscurb.projects` in `~/.gitconfig`; `dotscurb doctor` checks the repos in it);
-- which optional tools mise should install: Node, Claude Code, Codex, Cursor CLI, pi, herdr, worktrunk, direnv.
+- which optional tools mise should install: Node, Claude Code, Codex, Cursor CLI, pi, herdr, worktrunk, direnv,
+  tmux, uv, gitleaks.
   The default is yes only for tools not already on the machine. Your answers go to `~/.config/mise/conf.d/dotscurb-extras.toml`.
 
 It only adds to your existing files: in `~/.gitconfig` the hooks path, co-author line, project folder and a missing
