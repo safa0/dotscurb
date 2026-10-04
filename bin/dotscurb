@@ -5,6 +5,8 @@
 #                          dotagents declares (dotagents only generates the marketplace)
 #   dotscurb check         list MCP servers and plugins installed outside dotagents (read-only)
 #   dotscurb check --fix   move them into dotagents and remove the native copy (never copies secret values)
+#   dotscurb init          first-time setup: asks a few questions, wires dotscurb into your own chezmoi dotfiles
+#                          repo (creates one if you have none), then applies. Again with: dotscurb init --reconfigure
 #   dotscurb setup         install tools (mise), skills/MCP/plugins (dotagents), herdr hooks, then apply; the
 #                          first time it also runs doctor. chezmoi runs this after every apply.
 #   dotscurb doctor        checklist: tools, git, agent logins, herdr, unmanaged items, your project folders
@@ -206,6 +208,138 @@ $(printf '%s' "$j" | jq -r '.[]')"
   cmd_apply
 }
 
+# --- init: wire dotscurb into the user's own chezmoi repo -------------------------------------------------
+TOOLS_ASKED="node:node:Node.js 22 (dotagents needs Node 20+)
+claude:claude:Claude Code
+codex:codex:Codex CLI
+cursor-agent:cursor-agent:Cursor CLI
+npm:@earendil-works/pi-coding-agent:pi:pi coding agent
+herdr:herdr:herdr (terminal multiplexer for agents)
+worktrunk:wt:worktrunk (wt, git worktree helper)
+direnv:direnv:direnv (per-folder env, no secrets)
+tmux:tmux:tmux (terminal multiplexer)
+uv:uv:uv (Python tools and MCP servers)
+gitleaks:gitleaks:gitleaks (secret scanner for commits)"
+
+ask() { # ask <question> <default> → answer on stdout (default when there is no terminal)
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf '%s%s: ' "$1" "${2:+ [$2]}" > /dev/tty; IFS= read -r _a < /dev/tty || _a=""
+  else _a=""; fi
+  printf '%s' "${_a:-$2}"
+}
+yes_no() { _d=$2; _r=$(ask "$1 (y/n)" "$_d"); case $_r in y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac; }
+target_of() { printf '%s\n' "$1" | sed -E 's#(^|/)((modify|create|symlink|private|executable|run_after|run_once_after)_)+#\1#g; s#(^|/)dot_#\1.#g; s#\.tmpl$##'; }
+toml_list() { printf '%s' "$1" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | sed '/^$/d' | sed 's/.*/"&"/' | paste -sd, - | sed 's/^/[/; s/$/]/'; }
+
+cmd_init() {
+  reconf=0; for a in "$@"; do [ "$a" = --reconfigure ] && reconf=1; done
+  export PATH="$HOME/.local/bin:$PATH"
+  if ! command -v chezmoi >/dev/null 2>&1; then
+    echo "Installing chezmoi into ~/.local/bin…"
+    sh -c "$(curl -fsLS get.chezmoi.io)" -- -b "$HOME/.local/bin" >/dev/null || { warn "could not install chezmoi"; exit 1; }
+  fi
+  src=$(chezmoi source-path 2>/dev/null)
+  created=0
+  if [ -z "$src" ] || [ ! -d "$src" ] || [ -z "$(ls -A "$src" 2>/dev/null)" ]; then
+    echo "dotscurb keeps your personal settings in YOUR OWN dotfiles repo (chezmoi); dotscurb itself only holds the shared parts."
+    url=$(ask "Your dotfiles repo (git URL or GitHub user), empty to start a new one" "")
+    if [ -n "$url" ]; then chezmoi init "$url" || { warn "chezmoi init $url failed"; exit 1; }
+    else chezmoi init >/dev/null || { warn "chezmoi init failed"; exit 1; }; created=1; fi
+    src=$(chezmoi source-path)
+  fi
+  top=$(git -C "$src" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$src")
+  echo "Your dotfiles repo: $top"
+  managed=$(chezmoi managed -i files,symlinks 2>/dev/null)
+  is_managed() { printf '%s\n' "$managed" | grep -qxF -- "$1"; }
+  changed=""
+  note() { changed="$changed
+  $1"; }
+
+  # 1. answers → .chezmoidata/dotscurb.toml (personal, in your repo) and the optional-tools file
+  data="$src/.chezmoidata/dotscurb.toml"
+  if [ ! -f "$data" ] || [ "$reconf" = 1 ]; then
+    gh_login=""; gh_id=""
+    command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && { gh_login=$(gh api user --jq .login 2>/dev/null); gh_id=$(gh api user --jq .id 2>/dev/null); }
+    pdef=""; for d in "$HOME/code" "$HOME/Documents/repos" "$HOME/src" "$HOME/projects" "$HOME/dev"; do [ -d "$d" ] && pdef="$pdef${pdef:+, }~${d#$HOME}"; done
+    name=$(ask "Your full name (git commits)" "$(git config --global user.name)")
+    email=$(ask "Your email (git commits)" "$(git config --global user.email)")
+    github=$(ask "Your GitHub username (agent co-author line)" "$gh_login")
+    gid=$(ask "Your GitHub numeric id (gh api user --jq .id)" "$gh_id")
+    projects=$(ask "Folders that hold your git repos, comma-separated" "${pdef:-~/code}")
+    mkdir -p "$src/.chezmoidata"
+    { echo "# dotscurb answers (dotscurb init). Personal: lives in your dotfiles repo, not in dotscurb."
+      echo "[dotscurb]"
+      printf 'name = "%s"\nemail = "%s"\ngithub = "%s"\ngithubId = "%s"\nprojects = %s\n' "$name" "$email" "$github" "$gid" "$(toml_list "$projects")"
+    } > "$data"; note ".chezmoidata/dotscurb.toml (your answers)"
+    if ! is_managed .config/mise/conf.d/dotscurb-extras.toml || [ "$reconf" = 1 ]; then
+      echo "Optional tools, installed and pinned per machine by mise (default yes only if not on this machine):"
+      ex="$src/dot_config/mise/conf.d/dotscurb-extras.toml"; mkdir -p "$(dirname "$ex")"
+      { echo "# Optional tools chosen at dotscurb init. Yours: edit freely, then chezmoi apply."; echo "[tools]"
+        printf '%s\n' "$TOOLS_ASKED" | while IFS= read -r line; do
+          tool=${line%:*:*}; rest=${line#"$tool":}; cmd=${rest%%:*}; label=${rest#*:}
+          d=y; command -v "$cmd" >/dev/null 2>&1 && d=n
+          case $tool in npm:*) key="\"$tool\"" ;; *) key=$tool ;; esac
+          if yes_no "  $label$( [ $d = n ] && echo ' — already installed here')" "$d"; then
+            [ "$tool" = node ] && echo 'node = "22"' || echo "$key = \"latest\""; fi
+        done; } > "$ex"; note "dot_config/mise/conf.d/dotscurb-extras.toml (your optional tools)"
+    fi
+  fi
+
+  # 2. the shared wiring: copy template files you don't manage yet; patch plain files you do
+  ( cd "$ROOT/template" && find . -type f | sed 's#^\./##' ) | while IFS= read -r rp; do
+    case $rp in .chezmoiscripts/*)
+      grep -rqs 'dotscurb setup' "$src/.chezmoiscripts" && continue
+      mkdir -p "$src/.chezmoiscripts"; cp "$ROOT/template/$rp" "$src/$rp"; echo "  + $rp"; continue ;; esac
+    tgt=$(target_of "$rp")
+    if is_managed "$tgt"; then
+      sp=$(chezmoi source-path "$HOME/$tgt" 2>/dev/null); base=$(basename "$sp")
+      case $rp in modify_*) ;; *) continue ;; esac   # links/created files you manage: yours win
+      case $base in *.tmpl|modify_*|symlink_*) echo "  ! ~/$tgt is a template in your repo; add dotscurb's lines by hand (see $ROOT/template/$rp)"; continue ;; esac
+      t=$(mktemp)
+      case $rp in *.tmpl) chezmoi execute-template < "$ROOT/template/$rp" > "$t.sh" ;; *) cp "$ROOT/template/$rp" "$t.sh" ;; esac
+      sh "$t.sh" < "$sp" > "$t" && ! cmp -s "$t" "$sp" && { cat "$t" > "$sp"; echo "  ~ ${sp#$src/} (added dotscurb's lines)"; }
+      rm -f "$t" "$t.sh"
+    else
+      mkdir -p "$(dirname "$src/$rp")"; cp "$ROOT/template/$rp" "$src/$rp"; echo "  + $rp"
+    fi
+  done
+  # 3. fetch dotscurb on every machine that applies your repo
+  if ! cat "$src"/.chezmoiexternal.* 2>/dev/null | grep -q 'local/share/dotscurb'; then
+    ext="$src/.chezmoiexternal.toml"; [ -f "$src/.chezmoiexternal.toml.tmpl" ] && ext="$src/.chezmoiexternal.toml.tmpl"
+    url=$(git -C "$ROOT" remote get-url origin 2>/dev/null || echo https://github.com/safa0/dotscurb.git)
+    { [ -s "$ext" ] && echo; echo "# dotscurb: shared agent glue, fetched next to your dotfiles"
+      printf '[".local/share/dotscurb"]\n    type = "git-repo"\n    url = "%s"\n    refreshPeriod = "24h"\n' "$url"; } >> "$ext"
+    echo "  + ${ext#$src/} (fetches dotscurb)"
+  fi
+  # 4. your skills/MCP list and policy additions, if your repo doesn't have them yet
+  if ! is_managed .agents/agents.toml; then
+    if [ -f "$A/agents.toml" ]; then chezmoi add "$A/agents.toml" && echo "  + dot_agents/agents.toml (your existing one)"
+    else mkdir -p "$src/dot_agents"; cp "$ROOT/defaults/agents.toml" "$src/dot_agents/agents.toml"; echo "  + dot_agents/agents.toml (starter)"; fi
+  fi
+  if ! is_managed .agents/policy.yaml; then
+    if [ -f "$A/policy.yaml" ]; then chezmoi add "$A/policy.yaml" && echo "  + dot_agents/policy.yaml (your existing one)"
+    else mkdir -p "$src/dot_agents"; printf '# Your additions to the dotscurb policy (%s). Same keys; dotscurb apply combines both.\ndenyRead: []\ndenyWrite: []\ndenyCommands: []\n' "~/.local/share/dotscurb/defaults/policy.yaml" > "$src/dot_agents/policy.yaml"; echo "  + dot_agents/policy.yaml (empty)"; fi
+  fi
+  [ -n "$changed" ] && printf 'Wrote:%s\n' "$changed"
+
+  echo; echo "Changes in your dotfiles repo:"; git -C "$top" status --short 2>/dev/null
+  echo; chezmoi diff --exclude scripts 2>/dev/null | head -80
+  yes_no "Apply to your home folder now?" y || { echo "Not applied. Later: chezmoi apply"; return 0; }
+  chezmoi apply || warn "chezmoi apply reported errors"
+  if [ "$created" = 1 ]; then
+    git -C "$top" add -A && git -C "$top" commit -qm "feat(dotfiles): start dotfiles with dotscurb" && echo "Committed in $top"
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && yes_no "Create a PRIVATE GitHub repo 'dotfiles' for it and push?" y; then
+      (cd "$top" && gh repo create dotfiles --private --source . --push) && echo "Other machines: dotscurb's install.sh, then give it this repo."
+    else echo "Your dotfiles repo is local only. Add a remote later: chezmoi cd; gh repo create dotfiles --private --source . --push"; fi
+  else
+    echo "Review and commit in your dotfiles repo: chezmoi cd; git status; git commit"
+  fi
+}
+
+ensure_agents_files() { # standalone fallback when no dotfiles repo provides them
+  [ -f "$A/agents.toml" ] || { mkdir -p "$A" && cp "$ROOT/defaults/agents.toml" "$A/agents.toml" && say "created ~/.agents/agents.toml"; }
+}
+
 # --- setup / doctor --------------------------------------------------------------------------------------
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/dotscurb"
 AGENTS_CLI="claude codex cursor-agent pi opencode"
@@ -217,6 +351,7 @@ cmd_setup() {
       || { warn "could not install mise; see https://mise.jdx.dev/getting-started.html"; exit 1; }
   fi
   mise install --yes >/dev/null 2>&1 || warn "mise install failed; run 'mise install' to see why"
+  ensure_agents_files
   if command -v dotagents >/dev/null 2>&1; then
     (cd "$HOME" && { dotagents --global doctor >/dev/null 2>&1 || dotagents --global install >/dev/null 2>&1; dotagents --global sync >/dev/null 2>&1; }) \
       || warn "dotagents failed; run 'dotagents --global doctor'"
@@ -302,7 +437,8 @@ for a in "$@"; do [ "$a" = --quiet ] && QUIET=1; done
 case $cmd in
   apply) cmd_apply ;;
   check) cmd_check "$@" ;;
+  init) cmd_init "$@" ;;
   setup) cmd_setup ;;
   doctor) cmd_doctor ;;
-  *) sed -n '2,10p' "$self" | sed 's/^# \{0,1\}//' ;;
+  *) sed -n '2,12p' "$self" | sed 's/^# \{0,1\}//' ;;
 esac

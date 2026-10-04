@@ -1,4 +1,0 @@
-# Your additions to the dotscurb agent policy (defaults/policy.yaml); both lists are combined by `dotscurb apply`.
-denyRead: []
-denyWrite: []
-denyCommands: []

@@ -1,9 +1,14 @@
 #!/bin/sh
-# dotscurb template: sets only the keys dotscurb needs in ~/.gitconfig; everything else in it stays yours.
+# dotscurb: sets only the keys dotscurb needs in ~/.gitconfig; everything else in it stays yours.
+# Values come from .chezmoidata/dotscurb.toml in your dotfiles repo (written by `dotscurb init`).
 t=$(mktemp); cat > "$t"
-git config -f "$t" core.hooksPath "{{ .chezmoi.workingTree }}/hooks"
+git config -f "$t" core.hooksPath "~/.local/share/dotscurb/hooks"
+{{- with .dotscurb }}
 git config -f "$t" dotscurb.coauthor {{ printf "%s's Agent <%s+%s@users.noreply.github.com>" .github .githubId .github | quote }}
-git config -f "$t" --get-all dotscurb.projects | grep -qxF {{ .projects | quote }} || git config -f "$t" --add dotscurb.projects {{ .projects | quote }}
+{{- range .projects }}
+git config -f "$t" --get-all dotscurb.projects | grep -qxF {{ . | quote }} || git config -f "$t" --add dotscurb.projects {{ . | quote }}
+{{- end }}
 [ -n "$(git config -f "$t" --get user.name)" ] || git config -f "$t" user.name {{ .name | quote }}
 [ -n "$(git config -f "$t" --get user.email)" ] || git config -f "$t" user.email {{ .email | quote }}
+{{- end }}
 cat "$t"; rm -f "$t"
