@@ -293,6 +293,7 @@ cmd_init() {
     tgt=$(target_of "$rp")
     if is_managed "$tgt"; then
       sp=$(chezmoi source-path "$HOME/$tgt" 2>/dev/null); base=$(basename "$sp")
+      [ "$sp" = "$src/$rp" ] && continue              # already dotscurb's file
       case $rp in modify_*) ;; *) continue ;; esac   # links/created files you manage: yours win
       case $base in *.tmpl|modify_*|symlink_*) echo "  ! ~/$tgt is a template in your repo; add dotscurb's lines by hand (see $ROOT/template/$rp)"; continue ;; esac
       t=$(mktemp)

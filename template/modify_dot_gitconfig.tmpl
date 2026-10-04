@@ -4,11 +4,17 @@
 t=$(mktemp); cat > "$t"
 git config -f "$t" core.hooksPath "~/.local/share/dotscurb/hooks"
 {{- with .dotscurb }}
+{{- if and .github .githubId }}
 git config -f "$t" dotscurb.coauthor {{ printf "%s's Agent <%s+%s@users.noreply.github.com>" .github .githubId .github | quote }}
+{{- end }}
 {{- range .projects }}
 git config -f "$t" --get-all dotscurb.projects | grep -qxF {{ . | quote }} || git config -f "$t" --add dotscurb.projects {{ . | quote }}
 {{- end }}
+{{- if .name }}
 [ -n "$(git config -f "$t" --get user.name)" ] || git config -f "$t" user.name {{ .name | quote }}
+{{- end }}
+{{- if .email }}
 [ -n "$(git config -f "$t" --get user.email)" ] || git config -f "$t" user.email {{ .email | quote }}
+{{- end }}
 {{- end }}
 cat "$t"; rm -f "$t"
